@@ -135,10 +135,15 @@ const BROKER_URL = "wss://broker.emqx.io:8084/mqtt";
 const TOPIC_EVENTS = `pi/whiteboard/${room}/events`;
 const TOPIC_STATE  = `pi/whiteboard/${room}/state`;
 
-// ID único
+// ID único + ORIGIN (para filtrar eco)
 const clientId = `wb_${mode}_${Math.random().toString(16).slice(2)}`;
+const ORIGIN = clientId;
 
 let client = null;
+
+// versao do state (para evitar regressões no VIEW)
+let stateVersion = 0;
+let lastStateVSeen = 0;
 
 function setStatus(online) {
   if (mode !== "draw" || !dot || !statusText) return;
@@ -160,20 +165,20 @@ try {
 
 function publishEvents(type, payload) {
   if (!client || !client.connected) return;
-  // QoS 1: entrega mais robusta
   client.publish(
     TOPIC_EVENTS,
-    JSON.stringify({ type, payload }),
+    JSON.stringify({ type, origin: ORIGIN, payload }),
     { qos: 1, retain: false }
   );
 }
 
 function publishStateRetained() {
   if (!client || !client.connected) return;
-  // Estado completo: retained + qos 1 -> OBS corrige sempre
+  stateVersion++;
+
   client.publish(
     TOPIC_STATE,
-    JSON.stringify({ strokes }),
+    JSON.stringify({ origin: ORIGIN, v: stateVersion, strokes }),
     { qos: 1, retain: true }
   );
 }
@@ -183,7 +188,13 @@ function handleEventsMessage(msg) {
   try { data = JSON.parse(msg.toString()); } catch { return; }
   if (!data?.type) return;
 
-  // Realtime (pode falhar, mas ajuda na sensação de "ao vivo")
+  // ✅ no DRAW ignora o eco das próprias mensagens (evita “multiplicar” traços)
+  if (mode === "draw" && data.origin === ORIGIN) {
+    // deixa passar pedidos de estado (útil se tiveres mais viewers)
+    if (data.type !== "req_state") return;
+  }
+
+  // Realtime (pode falhar, mas dá sensação de "ao vivo")
   if (data.type === "stroke_points") {
     const p = data.payload;
     if (!p?._id || !Array.isArray(p.points) || p.points.length < 2) return;
@@ -203,7 +214,7 @@ function handleEventsMessage(msg) {
     return;
   }
 
-  // Commit (não-retained): acelera correção no fim do traço
+  // Commit: acelera correção no fim do traço
   if (data.type === "stroke_commit") {
     const s = data.payload;
     if (!s?._id || !Array.isArray(s.points) || s.points.length < 2) return;
@@ -224,7 +235,7 @@ function handleEventsMessage(msg) {
     return;
   }
 
-  // Viewer pode pedir estado; tablet responde com retained (ou também aqui, se quiseres)
+  // Viewer pode pedir estado; tablet responde com retained
   if (data.type === "req_state") {
     if (mode === "draw") publishStateRetained();
   }
@@ -233,7 +244,17 @@ function handleEventsMessage(msg) {
 function handleStateMessage(msg) {
   let data;
   try { data = JSON.parse(msg.toString()); } catch { return; }
-  if (!data?.strokes || !Array.isArray(data.strokes)) return;
+  if (!Array.isArray(data.strokes)) return;
+
+  // ✅ no DRAW ignora o state publicado por si próprio (não precisa dele)
+  if (mode === "draw" && data.origin === ORIGIN) return;
+
+  // ✅ no VIEW evita aplicar states antigos (retained atrasado / reorder)
+  if (mode === "view") {
+    const v = Number(data.v || 0);
+    if (v && v <= lastStateVSeen) return;
+    lastStateVSeen = v || lastStateVSeen;
+  }
 
   strokes = data.strokes;
   redrawAll();
@@ -243,7 +264,6 @@ if (client) {
   client.on("connect", () => {
     setStatus(true);
 
-    // subscrever ambos com QoS 1
     client.subscribe(TOPIC_EVENTS, { qos: 1 }, (err) => {
       if (err) showFatal("Erro ao subscrever events:\n" + String(err));
     });
@@ -251,12 +271,10 @@ if (client) {
       if (err) showFatal("Erro ao subscrever state:\n" + String(err));
     });
 
-    // VIEW: pede estado ao entrar (mas o retained já vem por si)
     if (mode === "view") {
       publishEvents("req_state", { t: Date.now() });
     }
 
-    // DRAW: publica estado inicial (retained) para viewers apanharem logo
     if (mode === "draw") {
       publishStateRetained();
     }
@@ -294,8 +312,7 @@ if (mode === "draw") {
   const CHECKPOINT_MS = 500;         // corrige OBS 2x por segundo
   const strokeId = () => Math.random().toString(16).slice(2);
 
-  // filtro por distância mínima (reduz MUITO tráfego)
-  // quanto maior, menos pontos. 0.002 ~ 0.2% do canvas.
+  // filtro por distância mínima
   const MIN_DIST2 = 0.000004;
 
   function dist2(a, b) {
@@ -315,7 +332,7 @@ if (mode === "draw") {
     if (!checkpointTimer) return;
     clearInterval(checkpointTimer);
     checkpointTimer = null;
-    publishStateRetained(); // snapshot final
+    publishStateRetained();
   }
 
   function flushRealtime(force = false) {
@@ -375,14 +392,11 @@ if (mode === "draw") {
     const s = strokes[strokes.length - 1];
     const last = s.points[s.points.length - 1];
 
-    // filtro de micro-movimentos
     if (last && dist2(p, last) < MIN_DIST2) return;
 
-    // local: adiciona e desenha já
     s.points.push(p);
     drawSegment(s.points[s.points.length - 2], s.points[s.points.length - 1], s.color, s.size);
 
-    // realtime buffer
     buffer.push(p);
     flushRealtime(false);
   });
@@ -391,16 +405,13 @@ if (mode === "draw") {
     if (!drawing) return;
     drawing = false;
 
-    // envia o resto realtime
     flushRealtime(true);
 
-    // commit do stroke para acelerar correção
     const s = strokes[strokes.length - 1];
     if (s && s.points.length >= 2) {
       publishEvents("stroke_commit", s);
     }
 
-    // snapshot retained final (garante OBS igual ao tablet)
     stopCheckpointing();
 
     buffer = [];
