@@ -1,33 +1,32 @@
-<!DOCTYPE html>
-<html lang="pt">
+<!doctype html>
+<html lang="pt-PT">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Canvas Colaborativo</title>
-  <link rel="stylesheet" href="./style.css" />
+  <title>OBS Whiteboard</title>
+  <link rel="stylesheet" href="/style.css" />
+  <!-- Pusher JS (cliente) -->
+  <script src="https://js.pusher.com/8.4.0/pusher.min.js"></script>
 </head>
 <body>
-  <div id="app" class="app">
-    <header class="topbar">
-      <div class="title" id="title">Canvas Colaborativo</div>
-      <div class="status" id="status">A ligar…</div>
-    </header>
-
-    <main class="stage">
-      <canvas id="canvas"></canvas>
-
-      <div id="toolbar" class="toolbar" aria-hidden="true">
-        <label>Cor
-          <input id="color" type="color" value="#ffffff">
-        </label>
-        <label>Espessura
-          <input id="width" type="range" min="1" max="48" value="6">
-        </label>
-        <button id="clearBtn">Limpar</button>
-      </div>
-    </main>
+  <div id="ui" class="ui hidden">
+    <div class="row">
+      <button id="btnClear" type="button">Limpar</button>
+      <button id="btnUndo" type="button">Undo</button>
+      <label>
+        Cor
+        <input id="color" type="color" value="#ff0000">
+      </label>
+      <label>
+        Tamanho
+        <input id="size" type="range" min="1" max="16" value="4">
+      </label>
+    </div>
+    <div class="hint" id="hint"></div>
   </div>
 
-  <script src="./script.js"></script>
+  <canvas id="board"></canvas>
+
+  <script src="/app.js"></script>
 </body>
 </html>
