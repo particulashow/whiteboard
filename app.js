@@ -1,16 +1,21 @@
 // =====================================================
 // OBS Whiteboard (Cloud) - MQTT over WebSockets (EMQX)
+// 2 tópicos:
+//   events: realtime (pode falhar, ok)
+//   state : estado completo (retained) para corrigir sempre
+//
 // VIEW (OBS):  ?mode=view&room=abc123
 // DRAW (tab):  ?mode=draw&room=abc123&bg=white
 //
 // Broker WSS (HTTPS):
-// wss://broker.emqx.io:8084/mqtt
+//   wss://broker.emqx.io:8084/mqtt
 // =====================================================
 
 const params = new URLSearchParams(window.location.search);
 const mode = (params.get("mode") || "view").toLowerCase();
 const room = params.get("room") || "default-room";
 const bg = (params.get("bg") || "transparent").toLowerCase();
+
 document.body.dataset.mode = mode;
 
 const canvas = document.getElementById("board");
@@ -40,7 +45,7 @@ if (mode === "draw" && hint) {
     `DRAW (tablet): ?mode=draw&room=${room}&bg=white`;
 }
 
-// ---------- Canvas sizing ----------
+// ---------- Canvas sizing + coords ----------
 function getCanvasRect() {
   return canvas.getBoundingClientRect();
 }
@@ -55,7 +60,6 @@ function resizeCanvas() {
 }
 window.addEventListener("resize", resizeCanvas);
 
-// coords normalizadas pelo rect do canvas (mais consistente OBS vs tablet)
 function normPoint(clientX, clientY) {
   const r = getCanvasRect();
   return { x: (clientX - r.left) / r.width, y: (clientY - r.top) / r.height };
@@ -68,10 +72,12 @@ function denormPoint(p) {
 function drawSegment(aN, bN, color, size) {
   const a = denormPoint(aN);
   const b = denormPoint(bN);
+
   ctx.strokeStyle = color;
   ctx.lineWidth = Number(size);
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
+
   ctx.beginPath();
   ctx.moveTo(a.x, a.y);
   ctx.lineTo(b.x, b.y);
@@ -99,10 +105,23 @@ function redrawAll() {
   }
 }
 
-// tablet: fundo branco opcional
 if (mode === "draw" && bg === "white") {
   document.body.style.background = "#111";
   canvas.style.background = "#fff";
+}
+
+function findStroke(id) {
+  return strokes.find(s => s._id === id) || null;
+}
+
+function upsertStroke(fullStroke) {
+  const ex = findStroke(fullStroke._id);
+  if (!ex) strokes.push(fullStroke);
+  else {
+    ex.color = fullStroke.color;
+    ex.size = fullStroke.size;
+    ex.points = fullStroke.points;
+  }
 }
 
 // ---------- MQTT ----------
@@ -111,9 +130,12 @@ if (!window.mqtt) {
 }
 
 const BROKER_URL = "wss://broker.emqx.io:8084/mqtt";
-const TOPIC = `pi/whiteboard/${room}`;
 
-// Client ID (único)
+// 2 tópicos: eventos + estado
+const TOPIC_EVENTS = `pi/whiteboard/${room}/events`;
+const TOPIC_STATE  = `pi/whiteboard/${room}/state`;
+
+// ID único
 const clientId = `wb_${mode}_${Math.random().toString(16).slice(2)}`;
 
 let client = null;
@@ -136,34 +158,32 @@ try {
   showFatal("Erro ao iniciar MQTT:\n" + String(e));
 }
 
-function publish(type, payload) {
+function publishEvents(type, payload) {
   if (!client || !client.connected) return;
-  // qos 0 é mais leve; a consistência vem do "commit"
-  client.publish(TOPIC, JSON.stringify({ type, payload }), { qos: 0, retain: false });
+  // QoS 1: entrega mais robusta
+  client.publish(
+    TOPIC_EVENTS,
+    JSON.stringify({ type, payload }),
+    { qos: 1, retain: false }
+  );
 }
 
-function findStroke(id) {
-  return strokes.find(s => s._id === id) || null;
+function publishStateRetained() {
+  if (!client || !client.connected) return;
+  // Estado completo: retained + qos 1 -> OBS corrige sempre
+  client.publish(
+    TOPIC_STATE,
+    JSON.stringify({ strokes }),
+    { qos: 1, retain: true }
+  );
 }
 
-function upsertStroke(fullStroke) {
-  const existing = findStroke(fullStroke._id);
-  if (!existing) {
-    strokes.push(fullStroke);
-  } else {
-    existing.color = fullStroke.color;
-    existing.size = fullStroke.size;
-    existing.points = fullStroke.points;
-  }
-}
-
-// Handler de mensagens
-function onMessage(msg) {
+function handleEventsMessage(msg) {
   let data;
   try { data = JSON.parse(msg.toString()); } catch { return; }
   if (!data?.type) return;
 
-  // 1) realtime points (pode falhar, ok)
+  // Realtime (pode falhar, mas ajuda na sensação de "ao vivo")
   if (data.type === "stroke_points") {
     const p = data.payload;
     if (!p?._id || !Array.isArray(p.points) || p.points.length < 2) return;
@@ -177,14 +197,13 @@ function onMessage(msg) {
     const startIdx = s.points.length;
     for (const pt of p.points) s.points.push(pt);
 
-    // desenha só o que entrou agora
     for (let i = Math.max(1, startIdx); i < s.points.length; i++) {
       drawSegment(s.points[i - 1], s.points[i], s.color, s.size);
     }
     return;
   }
 
-  // 2) commit do stroke (isto corrige tudo)
+  // Commit (não-retained): acelera correção no fim do traço
   if (data.type === "stroke_commit") {
     const s = data.payload;
     if (!s?._id || !Array.isArray(s.points) || s.points.length < 2) return;
@@ -193,7 +212,6 @@ function onMessage(msg) {
     return;
   }
 
-  // 3) clear / undo (com sync)
   if (data.type === "clear") {
     strokes = [];
     redrawAll();
@@ -206,35 +224,41 @@ function onMessage(msg) {
     return;
   }
 
-  // 4) viewer pede estado
+  // Viewer pode pedir estado; tablet responde com retained (ou também aqui, se quiseres)
   if (data.type === "req_state") {
-    // só o tablet responde (é o “autor”)
-    if (mode === "draw") {
-      publish("state", { strokes });
-    }
-    return;
+    if (mode === "draw") publishStateRetained();
   }
+}
 
-  // 5) resposta com estado completo
-  if (data.type === "state") {
-    const st = data.payload?.strokes;
-    if (!Array.isArray(st)) return;
-    strokes = st;
-    redrawAll();
-    return;
-  }
+function handleStateMessage(msg) {
+  let data;
+  try { data = JSON.parse(msg.toString()); } catch { return; }
+  if (!data?.strokes || !Array.isArray(data.strokes)) return;
+
+  strokes = data.strokes;
+  redrawAll();
 }
 
 if (client) {
   client.on("connect", () => {
     setStatus(true);
-    client.subscribe(TOPIC, { qos: 0 }, (err) => {
-      if (err) showFatal("Erro ao subscrever tópico:\n" + String(err));
+
+    // subscrever ambos com QoS 1
+    client.subscribe(TOPIC_EVENTS, { qos: 1 }, (err) => {
+      if (err) showFatal("Erro ao subscrever events:\n" + String(err));
+    });
+    client.subscribe(TOPIC_STATE, { qos: 1 }, (err) => {
+      if (err) showFatal("Erro ao subscrever state:\n" + String(err));
     });
 
-    // se for VIEW, pede estado ao entrar
+    // VIEW: pede estado ao entrar (mas o retained já vem por si)
     if (mode === "view") {
-      publish("req_state", { t: Date.now() });
+      publishEvents("req_state", { t: Date.now() });
+    }
+
+    // DRAW: publica estado inicial (retained) para viewers apanharem logo
+    if (mode === "draw") {
+      publishStateRetained();
     }
   });
 
@@ -246,10 +270,13 @@ if (client) {
     showFatal("MQTT error:\n" + String(err?.message || err));
   });
 
-  client.on("message", (_topic, msg) => onMessage(msg));
+  client.on("message", (topic, msg) => {
+    if (topic === TOPIC_EVENTS) return handleEventsMessage(msg);
+    if (topic === TOPIC_STATE)  return handleStateMessage(msg);
+  });
 }
 
-// ---------- DRAW logic: batching realtime + commit final ----------
+// ---------- DRAW: batching + checkpoints + filtro de distância ----------
 if (mode === "draw") {
   let drawing = false;
   let activeId = null;
@@ -258,10 +285,38 @@ if (mode === "draw") {
   let buffer = [];
   let lastSentAt = 0;
 
+  // checkpoints
+  let checkpointTimer = null;
+
   // tuning
-  const SEND_EVERY_MS = 33;         // 30 fps
-  const MAX_POINTS_PER_PACKET = 30; // chunk
+  const SEND_EVERY_MS = 33;          // 30fps
+  const MAX_POINTS_PER_PACKET = 30;  // chunks
+  const CHECKPOINT_MS = 500;         // corrige OBS 2x por segundo
   const strokeId = () => Math.random().toString(16).slice(2);
+
+  // filtro por distância mínima (reduz MUITO tráfego)
+  // quanto maior, menos pontos. 0.002 ~ 0.2% do canvas.
+  const MIN_DIST2 = 0.000004;
+
+  function dist2(a, b) {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    return dx*dx + dy*dy;
+  }
+
+  function startCheckpointing() {
+    if (checkpointTimer) return;
+    checkpointTimer = setInterval(() => {
+      publishStateRetained();
+    }, CHECKPOINT_MS);
+  }
+
+  function stopCheckpointing() {
+    if (!checkpointTimer) return;
+    clearInterval(checkpointTimer);
+    checkpointTimer = null;
+    publishStateRetained(); // snapshot final
+  }
 
   function flushRealtime(force = false) {
     const now = performance.now();
@@ -271,7 +326,7 @@ if (mode === "draw") {
     const chunk = buffer.slice(0, MAX_POINTS_PER_PACKET);
     buffer = buffer.slice(MAX_POINTS_PER_PACKET);
 
-    publish("stroke_points", {
+    publishEvents("stroke_points", {
       _id: activeId,
       color: colorEl.value,
       size: sizeEl.value,
@@ -284,7 +339,7 @@ if (mode === "draw") {
       while (buffer.length >= 2) {
         const c = buffer.slice(0, MAX_POINTS_PER_PACKET);
         buffer = buffer.slice(MAX_POINTS_PER_PACKET);
-        publish("stroke_points", {
+        publishEvents("stroke_points", {
           _id: activeId,
           color: colorEl.value,
           size: sizeEl.value,
@@ -302,7 +357,6 @@ if (mode === "draw") {
 
     const p = normPoint(e.clientX, e.clientY);
 
-    // cria stroke local
     strokes.push({
       _id: activeId,
       color: colorEl.value,
@@ -311,18 +365,22 @@ if (mode === "draw") {
     });
 
     buffer.push(p);
+    startCheckpointing();
   });
 
   canvas.addEventListener("pointermove", (e) => {
     if (!drawing) return;
 
     const p = normPoint(e.clientX, e.clientY);
-
-    // local: adiciona e desenha
     const s = strokes[strokes.length - 1];
+    const last = s.points[s.points.length - 1];
+
+    // filtro de micro-movimentos
+    if (last && dist2(p, last) < MIN_DIST2) return;
+
+    // local: adiciona e desenha já
     s.points.push(p);
-    const len = s.points.length;
-    drawSegment(s.points[len - 2], s.points[len - 1], s.color, s.size);
+    drawSegment(s.points[s.points.length - 2], s.points[s.points.length - 1], s.color, s.size);
 
     // realtime buffer
     buffer.push(p);
@@ -336,11 +394,14 @@ if (mode === "draw") {
     // envia o resto realtime
     flushRealtime(true);
 
-    // COMMIT: envia o stroke completo (isto garante que o OBS fica igual ao tablet)
+    // commit do stroke para acelerar correção
     const s = strokes[strokes.length - 1];
     if (s && s.points.length >= 2) {
-      publish("stroke_commit", s);
+      publishEvents("stroke_commit", s);
     }
+
+    // snapshot retained final (garante OBS igual ao tablet)
+    stopCheckpointing();
 
     buffer = [];
     activeId = null;
@@ -353,16 +414,17 @@ if (mode === "draw") {
   btnClear.addEventListener("click", () => {
     strokes = [];
     redrawAll();
-    publish("clear", {});
+    publishEvents("clear", {});
+    publishStateRetained();
   });
 
   btnUndo.addEventListener("click", () => {
     strokes.pop();
     redrawAll();
-    publish("undo", {});
-    // depois do undo, manda estado para corrigir viewers
-    publish("state", { strokes });
+    publishEvents("undo", {});
+    publishStateRetained();
   });
 }
 
+// init
 resizeCanvas();
