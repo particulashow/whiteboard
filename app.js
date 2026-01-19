@@ -105,3 +105,169 @@ window.addEventListener("resize", resizeCanvas);
 
 // --------- Supabase Realtime Broadcast ---------
 if (!window.supabase) {
+  console.error("Supabase JS não carregou. Confirma o script CDN no index.html.");
+}
+
+const placeholders =
+  SUPABASE_URL.includes("COLOCA_AQUI") || SUPABASE_KEY.includes("COLOCA_AQUI");
+
+if (placeholders && mode === "draw") {
+  hint.textContent =
+    "Faltam SUPABASE_URL e SUPABASE_ANON_KEY.\nSubstitui os placeholders no app.js (ou passa via URL).";
+}
+
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const channel = supabase.channel(`whiteboard:${room}`, {
+  config: { broadcast: { ack: false } },
+});
+
+// Receber
+channel
+  .on("broadcast", { event: "stroke" }, ({ payload }) => {
+    if (!payload?.from || !payload?.to) return;
+
+    if (payload.append) {
+      if (!currentStroke || currentStroke._id !== payload._id) {
+        currentStroke = {
+          _id: payload._id,
+          color: payload.color,
+          size: payload.size,
+          points: [payload.from, payload.to],
+        };
+        strokes.push(currentStroke);
+      } else {
+        currentStroke.points.push(payload.to);
+      }
+    } else {
+      currentStroke = null;
+    }
+
+    drawSegment(payload.from, payload.to, payload.color, payload.size);
+  })
+  .on("broadcast", { event: "clear" }, () => {
+    strokes = [];
+    currentStroke = null;
+    redrawAll();
+  })
+  .on("broadcast", { event: "undo" }, () => {
+    strokes.pop();
+    currentStroke = null;
+    redrawAll();
+  });
+
+// subscribe status -> indicador LIVE/OFFLINE
+channel.subscribe((status) => {
+  console.log("[Realtime]", status);
+
+  if (mode !== "draw") return;
+
+  const online =
+    status === "SUBSCRIBED" || status === "CHANNEL_JOINED" || status === "CONNECTED";
+
+  if (online) {
+    dot.style.background = "#3ad65b";
+    statusText.textContent = "LIVE";
+  } else {
+    dot.style.background = "#ff4d4d";
+    statusText.textContent = "OFFLINE";
+  }
+});
+
+// Enviar
+function send(event, payload) {
+  channel.send({
+    type: "broadcast",
+    event,
+    payload,
+  });
+}
+
+// --------- DRAW (tablet) ---------
+if (mode === "draw") {
+  // fundo branco opcional só no tablet
+  if (bg === "white") {
+    document.body.style.background = "#111";
+    canvas.style.background = "#fff";
+  }
+
+  let drawing = false;
+  let lastN = null;
+  let activeId = null;
+
+  const strokeId = () => Math.random().toString(16).slice(2);
+
+  canvas.addEventListener("pointerdown", (e) => {
+    drawing = true;
+    activeId = strokeId();
+    currentStroke = null;
+
+    const rect = canvas.getBoundingClientRect();
+    lastN = normPoint(e.clientX - rect.left, e.clientY - rect.top);
+  });
+
+  canvas.addEventListener("pointermove", (e) => {
+    if (!drawing) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const nowN = normPoint(e.clientX - rect.left, e.clientY - rect.top);
+
+    const payload = {
+      _id: activeId,
+      color: colorEl.value,
+      size: sizeEl.value,
+      from: lastN,
+      to: nowN,
+      append: true,
+    };
+
+    // 1) desenhar imediatamente no tablet
+    drawSegment(payload.from, payload.to, payload.color, payload.size);
+
+    // 2) guardar localmente para undo/redraw no tablet
+    if (!currentStroke || currentStroke._id !== payload._id) {
+      currentStroke = {
+        _id: payload._id,
+        color: payload.color,
+        size: payload.size,
+        points: [payload.from, payload.to],
+      };
+      strokes.push(currentStroke);
+    } else {
+      currentStroke.points.push(payload.to);
+    }
+
+    // 3) enviar para OBS/viewers
+    send("stroke", payload);
+
+    lastN = nowN;
+  });
+
+  function stopDrawing() {
+    drawing = false;
+    lastN = null;
+    activeId = null;
+    currentStroke = null;
+  }
+
+  canvas.addEventListener("pointerup", stopDrawing);
+  canvas.addEventListener("pointercancel", stopDrawing);
+  canvas.addEventListener("pointerleave", stopDrawing);
+
+  btnClear.addEventListener("click", () => {
+    strokes = [];
+    currentStroke = null;
+    redrawAll();
+    send("clear", {});
+  });
+
+  btnUndo.addEventListener("click", () => {
+    strokes.pop();
+    currentStroke = null;
+    redrawAll();
+    send("undo", {});
+  });
+}
+
+// --------- init ---------
+resizeCanvas();
