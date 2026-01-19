@@ -5,22 +5,17 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>OBS Whiteboard</title>
   <link rel="stylesheet" href="/style.css" />
-  <!-- Pusher JS (cliente) -->
-  <script src="https://js.pusher.com/8.4.0/pusher.min.js"></script>
+
+  <!-- Supabase JS via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
   <div id="ui" class="ui hidden">
     <div class="row">
       <button id="btnClear" type="button">Limpar</button>
       <button id="btnUndo" type="button">Undo</button>
-      <label>
-        Cor
-        <input id="color" type="color" value="#ff0000">
-      </label>
-      <label>
-        Tamanho
-        <input id="size" type="range" min="1" max="16" value="4">
-      </label>
+      <label>Cor <input id="color" type="color" value="#ff0000"></label>
+      <label>Tamanho <input id="size" type="range" min="1" max="16" value="4"></label>
     </div>
     <div class="hint" id="hint"></div>
   </div>
