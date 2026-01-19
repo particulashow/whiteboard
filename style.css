@@ -10,7 +10,7 @@ canvas {
   width: 100vw;
   height: 100vh;
   display: block;
-  background: transparent; /* o truque do OBS */
+  background: transparent;
 }
 
 .ui {
@@ -54,7 +54,4 @@ label {
   opacity: 0.95;
 }
 
-.hint {
-  font-size: 12px;
-  opacity: 0.8;
-}
+.hint { font-size: 12px; opacity: 0.8; }
