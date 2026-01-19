@@ -1,16 +1,31 @@
+:root{
+  --panel: rgba(0,0,0,0.55);
+  --panel2: rgba(255,255,255,0.14);
+  --text: #ffffff;
+  --danger: rgba(255, 70, 70, 0.25);
+  --border: rgba(255,255,255,0.12);
+}
+
 html, body {
   margin: 0;
   padding: 0;
   background: transparent;
   overflow: hidden;
   font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  height: 100%;
+  width: 100%;
+}
+
+/* MUITO IMPORTANTE para tablet: evita scroll/zoom a roubar gestos */
+body, canvas {
+  touch-action: none;
 }
 
 canvas {
   width: 100vw;
   height: 100vh;
   display: block;
-  background: transparent;
+  background: transparent; /* OBS friendly */
 }
 
 .ui {
@@ -19,39 +34,91 @@ canvas {
   right: 12px;
   bottom: 12px;
   padding: 10px 12px;
-  border-radius: 12px;
-  backdrop-filter: blur(8px);
-  background: rgba(0,0,0,0.55);
-  color: #fff;
-  display: grid;
-  gap: 8px;
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   z-index: 10;
+  display: grid;
+  gap: 10px;
 }
 
 .ui.hidden { display: none; }
 
-.row {
-  display: flex;
+.topbar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
   gap: 10px;
-  align-items: center;
+}
+
+.status{
+  display:flex;
+  align-items:center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.3px;
+}
+
+.dot{
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #777;
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.10) inset;
+}
+
+.room{
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.controls{
+  display:flex;
+  align-items:center;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
-button {
-  border: 0;
-  border-radius: 10px;
+.btn{
+  border: 1px solid var(--border);
+  border-radius: 12px;
   padding: 10px 12px;
-  background: rgba(255,255,255,0.14);
-  color: #fff;
+  background: var(--panel2);
+  color: var(--text);
   cursor: pointer;
+  font-weight: 600;
 }
 
-label {
+.btn:active{
+  transform: translateY(1px);
+}
+
+.btn-danger{
+  background: var(--danger);
+}
+
+.field{
   display: inline-flex;
-  gap: 8px;
   align-items: center;
-  font-size: 14px;
+  gap: 8px;
+  font-size: 13px;
   opacity: 0.95;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px 10px;
+  background: rgba(255,255,255,0.06);
 }
 
-.hint { font-size: 12px; opacity: 0.8; }
+.field span{
+  opacity: 0.9;
+}
+
+.hint{
+  font-size: 12px;
+  opacity: 0.8;
+  line-height: 1.35;
+}
