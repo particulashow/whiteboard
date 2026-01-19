@@ -141,7 +141,7 @@ const ORIGIN = clientId;
 
 let client = null;
 
-// versao do state (para evitar regressões no VIEW)
+// versão do state (para evitar regressões no VIEW)
 let stateVersion = 0;
 let lastStateVSeen = 0;
 
@@ -188,13 +188,11 @@ function handleEventsMessage(msg) {
   try { data = JSON.parse(msg.toString()); } catch { return; }
   if (!data?.type) return;
 
-  // ✅ no DRAW ignora o eco das próprias mensagens (evita “multiplicar” traços)
+  // no DRAW ignora o eco das próprias mensagens (evita “multiplicar” traços)
   if (mode === "draw" && data.origin === ORIGIN) {
-    // deixa passar pedidos de estado (útil se tiveres mais viewers)
     if (data.type !== "req_state") return;
   }
 
-  // Realtime (pode falhar, mas dá sensação de "ao vivo")
   if (data.type === "stroke_points") {
     const p = data.payload;
     if (!p?._id || !Array.isArray(p.points) || p.points.length < 2) return;
@@ -214,7 +212,6 @@ function handleEventsMessage(msg) {
     return;
   }
 
-  // Commit: acelera correção no fim do traço
   if (data.type === "stroke_commit") {
     const s = data.payload;
     if (!s?._id || !Array.isArray(s.points) || s.points.length < 2) return;
@@ -235,7 +232,6 @@ function handleEventsMessage(msg) {
     return;
   }
 
-  // Viewer pode pedir estado; tablet responde com retained
   if (data.type === "req_state") {
     if (mode === "draw") publishStateRetained();
   }
@@ -246,10 +242,10 @@ function handleStateMessage(msg) {
   try { data = JSON.parse(msg.toString()); } catch { return; }
   if (!Array.isArray(data.strokes)) return;
 
-  // ✅ no DRAW ignora o state publicado por si próprio (não precisa dele)
+  // no DRAW ignora o state publicado por si
   if (mode === "draw" && data.origin === ORIGIN) return;
 
-  // ✅ no VIEW evita aplicar states antigos (retained atrasado / reorder)
+  // no VIEW evita aplicar states antigos
   if (mode === "view") {
     const v = Number(data.v || 0);
     if (v && v <= lastStateVSeen) return;
@@ -294,7 +290,7 @@ if (client) {
   });
 }
 
-// ---------- DRAW: batching + checkpoints + filtro de distância ----------
+// ---------- DRAW: batching + checkpoints + filtro + interpolação ----------
 if (mode === "draw") {
   let drawing = false;
   let activeId = null;
@@ -307,18 +303,49 @@ if (mode === "draw") {
   let checkpointTimer = null;
 
   // tuning
-  const SEND_EVERY_MS = 33;          // 30fps
-  const MAX_POINTS_PER_PACKET = 30;  // chunks
-  const CHECKPOINT_MS = 500;         // corrige OBS 2x por segundo
+  const SEND_EVERY_MS = 33;           // 30fps
+  const MAX_POINTS_PER_PACKET = 30;   // chunks
+  const CHECKPOINT_MS = 250;          // corrige 4x por segundo
   const strokeId = () => Math.random().toString(16).slice(2);
 
-  // filtro por distância mínima
-  const MIN_DIST2 = 0.000004;
+  // filtro por distância mínima (menos agressivo para escrita rápida)
+  const MIN_DIST2 = 0.0000015;
+
+  // interpolação: cria pontos intermédios se houver saltos grandes
+  const MAX_STEP = 0.012; // ~1.2% do canvas por passo
 
   function dist2(a, b) {
     const dx = a.x - b.x;
     const dy = a.y - b.y;
     return dx*dx + dy*dy;
+  }
+
+  function lerp(a, b, t) {
+    return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+  }
+
+  function pushInterpolatedPoints(s, from, to) {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+
+    if (dist <= MAX_STEP) {
+      s.points.push(to);
+      buffer.push(to);
+      drawSegment(from, to, s.color, s.size);
+      return;
+    }
+
+    const steps = Math.ceil(dist / MAX_STEP);
+    let prev = from;
+
+    for (let i = 1; i <= steps; i++) {
+      const p = lerp(from, to, i / steps);
+      s.points.push(p);
+      buffer.push(p);
+      drawSegment(prev, p, s.color, s.size);
+      prev = p;
+    }
   }
 
   function startCheckpointing() {
@@ -356,6 +383,7 @@ if (mode === "draw") {
       while (buffer.length >= 2) {
         const c = buffer.slice(0, MAX_POINTS_PER_PACKET);
         buffer = buffer.slice(MAX_POINTS_PER_PACKET);
+
         publishEvents("stroke_points", {
           _id: activeId,
           color: colorEl.value,
@@ -392,12 +420,16 @@ if (mode === "draw") {
     const s = strokes[strokes.length - 1];
     const last = s.points[s.points.length - 1];
 
+    // filtro de micro-movimentos
     if (last && dist2(p, last) < MIN_DIST2) return;
 
-    s.points.push(p);
-    drawSegment(s.points[s.points.length - 2], s.points[s.points.length - 1], s.color, s.size);
+    // se houver salto grande, cria pontos intermédios
+    if (last) pushInterpolatedPoints(s, last, p);
+    else {
+      s.points.push(p);
+      buffer.push(p);
+    }
 
-    buffer.push(p);
     flushRealtime(false);
   });
 
