@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Canvas Colaborativo</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div id="app" class="app">
+    <header class="topbar">
+      <div class="title" id="title">Canvas Colaborativo</div>
+      <div class="status" id="status">A ligar…</div>
+    </header>
+
+    <main class="stage">
+      <canvas id="canvas"></canvas>
+
+      <div id="toolbar" class="toolbar" aria-hidden="true">
+        <label>Cor
+          <input id="color" type="color" value="#ffffff">
+        </label>
+        <label>Espessura
+          <input id="width" type="range" min="1" max="48" value="6">
+        </label>
+        <button id="clearBtn">Limpar</button>
+      </div>
+    </main>
+  </div>
+
+  <script src="./script.js"></script>
+</body>
+</html>
