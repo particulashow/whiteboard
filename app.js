@@ -1,36 +1,34 @@
 // =====================================================
-// OBS Whiteboard (Cloud) - MQTT over WebSockets (EMQX)
-// 2 tópicos:
-//   events: realtime (pode falhar, ok)
-//   state : estado completo (retained) para corrigir sempre
+// OBS Whiteboard - MQTT (EMQX public) + 2 tópicos
+// events: realtime
+// state : retained snapshot
 //
-// VIEW (OBS):  ?mode=view&room=abc123
-// DRAW (tab):  ?mode=draw&room=abc123&bg=white
-//
-// Broker WSS (HTTPS):
-//   wss://broker.emqx.io:8084/mqtt
+// VIEW: ?mode=view&room=abc123
+// DRAW: ?mode=draw&room=abc123&bg=white
 // =====================================================
 
 const params = new URLSearchParams(window.location.search);
 const mode = (params.get("mode") || "view").toLowerCase();
 const room = params.get("room") || "default-room";
 const bg = (params.get("bg") || "transparent").toLowerCase();
-
 document.body.dataset.mode = mode;
 
 const canvas = document.getElementById("board");
 const ctx = canvas.getContext("2d", { alpha: true });
 
+const fatal = document.getElementById("fatal");
 const dot = document.getElementById("dot");
 const statusText = document.getElementById("statusText");
 const roomLabel = document.getElementById("roomLabel");
-const hint = document.getElementById("hint");
-const fatal = document.getElementById("fatal");
 
+const toolbar = document.getElementById("toolbar");
+const btnMin = document.getElementById("btnMin");
 const btnClear = document.getElementById("btnClear");
 const btnUndo = document.getElementById("btnUndo");
 const colorEl = document.getElementById("color");
 const sizeEl = document.getElementById("size");
+const opacityEl = document.getElementById("opacity");
+const palette = document.getElementById("palette");
 
 function showFatal(msg) {
   if (!fatal) return;
@@ -39,16 +37,9 @@ function showFatal(msg) {
 }
 
 if (roomLabel) roomLabel.textContent = `room: ${room}`;
-if (mode === "draw" && hint) {
-  hint.textContent =
-    `VIEW (OBS): ?mode=view&room=${room}\n` +
-    `DRAW (tablet): ?mode=draw&room=${room}&bg=white`;
-}
 
 // ---------- Canvas sizing + coords ----------
-function getCanvasRect() {
-  return canvas.getBoundingClientRect();
-}
+function getCanvasRect() { return canvas.getBoundingClientRect(); }
 
 function resizeCanvas() {
   const dpr = window.devicePixelRatio || 1;
@@ -69,23 +60,65 @@ function denormPoint(p) {
   return { x: p.x * r.width, y: p.y * r.height };
 }
 
-function drawSegment(aN, bN, color, size) {
+// ---------- Tools / Style ----------
+let currentTool = "pen";      // pen | highlighter | neon | dashed | eraser
+let currentColor = "#ff3b30";
+let currentSize = 5;
+let currentOpacity = 1;
+
+function effectiveOpacity(tool, opacity) {
+  if (tool === "highlighter") return Math.min(opacity, 0.35);
+  if (tool === "neon") return Math.min(opacity, 0.85);
+  return opacity;
+}
+
+function applyStrokeStyle(stroke) {
+  ctx.globalAlpha = effectiveOpacity(stroke.tool, stroke.opacity ?? 1);
+  ctx.lineWidth = Number(stroke.size || 5);
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  // defaults
+  ctx.setLineDash([]);
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = "transparent";
+  ctx.globalCompositeOperation = "source-over";
+  ctx.strokeStyle = stroke.color || "#ffffff";
+
+  if (stroke.tool === "dashed") {
+    const w = ctx.lineWidth;
+    ctx.setLineDash([Math.max(6, w * 2), Math.max(6, w * 1.4)]);
+  }
+
+  if (stroke.tool === "neon") {
+    ctx.shadowBlur = Math.max(10, ctx.lineWidth * 2.5);
+    ctx.shadowColor = stroke.color || "#00ffff";
+  }
+
+  if (stroke.tool === "eraser") {
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = "rgba(0,0,0,1)";
+  }
+}
+
+function drawSegment(aN, bN, stroke) {
   const a = denormPoint(aN);
   const b = denormPoint(bN);
 
-  ctx.strokeStyle = color;
-  ctx.lineWidth = Number(size);
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
+  ctx.save();
+  applyStrokeStyle(stroke);
 
   ctx.beginPath();
   ctx.moveTo(a.x, a.y);
   ctx.lineTo(b.x, b.y);
   ctx.stroke();
+
+  ctx.restore();
 }
 
 // ---------- State ----------
-let strokes = []; // [{_id,color,size,points:[{x,y}...]}]
+let strokes = []; // [{_id, tool, color, size, opacity, points:[{x,y}...]}]
 
 function redrawAll() {
   const r = getCanvasRect();
@@ -100,7 +133,7 @@ function redrawAll() {
 
   for (const s of strokes) {
     for (let i = 1; i < s.points.length; i++) {
-      drawSegment(s.points[i - 1], s.points[i], s.color, s.size);
+      drawSegment(s.points[i - 1], s.points[i], s);
     }
   }
 }
@@ -110,38 +143,31 @@ if (mode === "draw" && bg === "white") {
   canvas.style.background = "#fff";
 }
 
-function findStroke(id) {
-  return strokes.find(s => s._id === id) || null;
-}
+function findStroke(id) { return strokes.find(s => s._id === id) || null; }
 
 function upsertStroke(fullStroke) {
   const ex = findStroke(fullStroke._id);
   if (!ex) strokes.push(fullStroke);
   else {
+    ex.tool = fullStroke.tool;
     ex.color = fullStroke.color;
     ex.size = fullStroke.size;
+    ex.opacity = fullStroke.opacity;
     ex.points = fullStroke.points;
   }
 }
 
 // ---------- MQTT ----------
-if (!window.mqtt) {
-  showFatal("mqtt.js não carregou.\nConfirma o script no index.html.");
-}
+if (!window.mqtt) showFatal("mqtt.js não carregou.\nConfirma o script no index.html.");
 
 const BROKER_URL = "wss://broker.emqx.io:8084/mqtt";
-
-// 2 tópicos: eventos + estado
 const TOPIC_EVENTS = `pi/whiteboard/${room}/events`;
 const TOPIC_STATE  = `pi/whiteboard/${room}/state`;
 
-// ID único + ORIGIN (para filtrar eco)
 const clientId = `wb_${mode}_${Math.random().toString(16).slice(2)}`;
 const ORIGIN = clientId;
 
 let client = null;
-
-// versão do state (para evitar regressões no VIEW)
 let stateVersion = 0;
 let lastStateVSeen = 0;
 
@@ -175,7 +201,6 @@ function publishEvents(type, payload) {
 function publishStateRetained() {
   if (!client || !client.connected) return;
   stateVersion++;
-
   client.publish(
     TOPIC_STATE,
     JSON.stringify({ origin: ORIGIN, v: stateVersion, strokes }),
@@ -188,7 +213,7 @@ function handleEventsMessage(msg) {
   try { data = JSON.parse(msg.toString()); } catch { return; }
   if (!data?.type) return;
 
-  // no DRAW ignora o eco das próprias mensagens (evita “multiplicar” traços)
+  // no DRAW ignora eco das próprias mensagens
   if (mode === "draw" && data.origin === ORIGIN) {
     if (data.type !== "req_state") return;
   }
@@ -199,7 +224,14 @@ function handleEventsMessage(msg) {
 
     let s = findStroke(p._id);
     if (!s) {
-      s = { _id: p._id, color: p.color, size: p.size, points: [] };
+      s = {
+        _id: p._id,
+        tool: p.tool || "pen",
+        color: p.color || "#ffffff",
+        size: p.size || 5,
+        opacity: p.opacity ?? 1,
+        points: []
+      };
       strokes.push(s);
     }
 
@@ -207,7 +239,7 @@ function handleEventsMessage(msg) {
     for (const pt of p.points) s.points.push(pt);
 
     for (let i = Math.max(1, startIdx); i < s.points.length; i++) {
-      drawSegment(s.points[i - 1], s.points[i], s.color, s.size);
+      drawSegment(s.points[i - 1], s.points[i], s);
     }
     return;
   }
@@ -242,10 +274,8 @@ function handleStateMessage(msg) {
   try { data = JSON.parse(msg.toString()); } catch { return; }
   if (!Array.isArray(data.strokes)) return;
 
-  // no DRAW ignora o state publicado por si
   if (mode === "draw" && data.origin === ORIGIN) return;
 
-  // no VIEW evita aplicar states antigos
   if (mode === "view") {
     const v = Number(data.v || 0);
     if (v && v <= lastStateVSeen) return;
@@ -267,13 +297,8 @@ if (client) {
       if (err) showFatal("Erro ao subscrever state:\n" + String(err));
     });
 
-    if (mode === "view") {
-      publishEvents("req_state", { t: Date.now() });
-    }
-
-    if (mode === "draw") {
-      publishStateRetained();
-    }
+    if (mode === "view") publishEvents("req_state", { t: Date.now() });
+    if (mode === "draw") publishStateRetained();
   });
 
   client.on("reconnect", () => setStatus(false));
@@ -290,29 +315,114 @@ if (client) {
   });
 }
 
+// ---------- UI wiring (só no draw) ----------
+function setTool(tool) {
+  currentTool = tool;
+
+  document.querySelectorAll(".tool-btn").forEach(b => {
+    b.classList.toggle("active", b.dataset.tool === tool);
+  });
+
+  // defaults simpáticos por tool
+  if (tool === "highlighter") {
+    currentOpacity = Math.min(currentOpacity, 0.35);
+    if (opacityEl) opacityEl.value = String(currentOpacity);
+  }
+  if (tool === "eraser") {
+    // borracha costuma ser maior
+    currentSize = Math.max(currentSize, 12);
+    if (sizeEl) sizeEl.value = String(currentSize);
+    document.querySelectorAll(".chip").forEach(c => c.classList.remove("active"));
+  }
+}
+
+function setColor(hex) {
+  currentColor = hex;
+  if (colorEl) colorEl.value = hex;
+
+  document.querySelectorAll(".swatch").forEach(s => {
+    s.classList.toggle("active", s.dataset.color?.toLowerCase() === hex.toLowerCase());
+  });
+}
+
+function setSize(n) {
+  currentSize = Number(n);
+  if (sizeEl) sizeEl.value = String(currentSize);
+
+  document.querySelectorAll(".chip").forEach(c => {
+    c.classList.toggle("active", Number(c.dataset.size) === currentSize);
+  });
+}
+
+function setOpacity(v) {
+  currentOpacity = Number(v);
+  if (opacityEl) opacityEl.value = String(currentOpacity);
+}
+
+if (mode === "draw") {
+  // Tool buttons
+  document.querySelectorAll(".tool-btn").forEach(btn => {
+    btn.addEventListener("click", () => setTool(btn.dataset.tool));
+  });
+
+  // Palette
+  if (palette) {
+    palette.querySelectorAll(".swatch").forEach(sw => {
+      sw.addEventListener("click", () => setColor(sw.dataset.color));
+    });
+  }
+
+  // Color input
+  if (colorEl) {
+    colorEl.addEventListener("input", (e) => setColor(e.target.value));
+  }
+
+  // Size slider
+  if (sizeEl) {
+    sizeEl.addEventListener("input", (e) => setSize(e.target.value));
+  }
+
+  // Size chips
+  document.querySelectorAll(".chip").forEach(ch => {
+    ch.addEventListener("click", () => setSize(ch.dataset.size));
+  });
+
+  // Opacity
+  if (opacityEl) {
+    opacityEl.addEventListener("input", (e) => setOpacity(e.target.value));
+  }
+
+  // Minimize
+  if (btnMin && toolbar) {
+    btnMin.addEventListener("click", () => {
+      toolbar.classList.toggle("min");
+    });
+  }
+
+  // defaults
+  setTool("pen");
+  setColor(currentColor);
+  setSize(currentSize);
+  setOpacity(currentOpacity);
+}
+
 // ---------- DRAW: batching + checkpoints + filtro + interpolação ----------
 if (mode === "draw") {
   let drawing = false;
   let activeId = null;
 
-  // buffer realtime
   let buffer = [];
   let lastSentAt = 0;
 
-  // checkpoints
   let checkpointTimer = null;
 
-  // tuning
   const SEND_EVERY_MS = 33;           // 30fps
-  const MAX_POINTS_PER_PACKET = 30;   // chunks
-  const CHECKPOINT_MS = 250;          // corrige 4x por segundo
+  const MAX_POINTS_PER_PACKET = 30;
+  const CHECKPOINT_MS = 250;          // corrige 4x/seg
   const strokeId = () => Math.random().toString(16).slice(2);
 
-  // filtro por distância mínima (menos agressivo para escrita rápida)
-  const MIN_DIST2 = 0.0000015;
-
-  // interpolação: cria pontos intermédios se houver saltos grandes
-  const MAX_STEP = 0.012; // ~1.2% do canvas por passo
+  const MIN_DIST2 = 0.0000015;        // mais sensível p/ escrita rápida
+  const MAX_STEP = 0.012;             // interpolação
 
   function dist2(a, b) {
     const dx = a.x - b.x;
@@ -324,15 +434,15 @@ if (mode === "draw") {
     return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
   }
 
-  function pushInterpolatedPoints(s, from, to) {
+  function pushInterpolatedPoints(stroke, from, to) {
     const dx = to.x - from.x;
     const dy = to.y - from.y;
     const dist = Math.sqrt(dx*dx + dy*dy);
 
     if (dist <= MAX_STEP) {
-      s.points.push(to);
+      stroke.points.push(to);
       buffer.push(to);
-      drawSegment(from, to, s.color, s.size);
+      drawSegment(from, to, stroke);
       return;
     }
 
@@ -341,18 +451,16 @@ if (mode === "draw") {
 
     for (let i = 1; i <= steps; i++) {
       const p = lerp(from, to, i / steps);
-      s.points.push(p);
+      stroke.points.push(p);
       buffer.push(p);
-      drawSegment(prev, p, s.color, s.size);
+      drawSegment(prev, p, stroke);
       prev = p;
     }
   }
 
   function startCheckpointing() {
     if (checkpointTimer) return;
-    checkpointTimer = setInterval(() => {
-      publishStateRetained();
-    }, CHECKPOINT_MS);
+    checkpointTimer = setInterval(() => publishStateRetained(), CHECKPOINT_MS);
   }
 
   function stopCheckpointing() {
@@ -370,10 +478,13 @@ if (mode === "draw") {
     const chunk = buffer.slice(0, MAX_POINTS_PER_PACKET);
     buffer = buffer.slice(MAX_POINTS_PER_PACKET);
 
+    // Envia também o estilo para o VIEW conseguir desenhar igual
     publishEvents("stroke_points", {
       _id: activeId,
-      color: colorEl.value,
-      size: sizeEl.value,
+      tool: currentTool,
+      color: currentColor,
+      size: currentSize,
+      opacity: currentOpacity,
       points: chunk,
     });
 
@@ -386,8 +497,10 @@ if (mode === "draw") {
 
         publishEvents("stroke_points", {
           _id: activeId,
-          color: colorEl.value,
-          size: sizeEl.value,
+          tool: currentTool,
+          color: currentColor,
+          size: currentSize,
+          opacity: currentOpacity,
           points: c,
         });
       }
@@ -402,14 +515,18 @@ if (mode === "draw") {
 
     const p = normPoint(e.clientX, e.clientY);
 
-    strokes.push({
+    const stroke = {
       _id: activeId,
-      color: colorEl.value,
-      size: sizeEl.value,
+      tool: currentTool,
+      color: currentColor,
+      size: currentSize,
+      opacity: currentOpacity,
       points: [p],
-    });
+    };
 
+    strokes.push(stroke);
     buffer.push(p);
+
     startCheckpointing();
   });
 
@@ -417,16 +534,14 @@ if (mode === "draw") {
     if (!drawing) return;
 
     const p = normPoint(e.clientX, e.clientY);
-    const s = strokes[strokes.length - 1];
-    const last = s.points[s.points.length - 1];
+    const stroke = strokes[strokes.length - 1];
+    const last = stroke.points[stroke.points.length - 1];
 
-    // filtro de micro-movimentos
     if (last && dist2(p, last) < MIN_DIST2) return;
 
-    // se houver salto grande, cria pontos intermédios
-    if (last) pushInterpolatedPoints(s, last, p);
+    if (last) pushInterpolatedPoints(stroke, last, p);
     else {
-      s.points.push(p);
+      stroke.points.push(p);
       buffer.push(p);
     }
 
@@ -439,9 +554,9 @@ if (mode === "draw") {
 
     flushRealtime(true);
 
-    const s = strokes[strokes.length - 1];
-    if (s && s.points.length >= 2) {
-      publishEvents("stroke_commit", s);
+    const stroke = strokes[strokes.length - 1];
+    if (stroke && stroke.points.length >= 2) {
+      publishEvents("stroke_commit", stroke);
     }
 
     stopCheckpointing();
@@ -454,19 +569,23 @@ if (mode === "draw") {
   canvas.addEventListener("pointercancel", stop);
   canvas.addEventListener("pointerleave", stop);
 
-  btnClear.addEventListener("click", () => {
-    strokes = [];
-    redrawAll();
-    publishEvents("clear", {});
-    publishStateRetained();
-  });
+  if (btnClear) {
+    btnClear.addEventListener("click", () => {
+      strokes = [];
+      redrawAll();
+      publishEvents("clear", {});
+      publishStateRetained();
+    });
+  }
 
-  btnUndo.addEventListener("click", () => {
-    strokes.pop();
-    redrawAll();
-    publishEvents("undo", {});
-    publishStateRetained();
-  });
+  if (btnUndo) {
+    btnUndo.addEventListener("click", () => {
+      strokes.pop();
+      redrawAll();
+      publishEvents("undo", {});
+      publishStateRetained();
+    });
+  }
 }
 
 // init
