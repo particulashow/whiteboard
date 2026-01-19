@@ -4,6 +4,7 @@
 //  VIEW: ?mode=view&room=abc123
 //  DRAW: ?mode=draw&room=abc123&bg=white
 // =====================================================
+document.body.style.outline = "6px solid lime";
 
 const params = new URLSearchParams(window.location.search);
 
