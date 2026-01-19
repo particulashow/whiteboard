@@ -1,3 +1,12 @@
+// =====================================================
+// OBS Whiteboard (Cloud) - MQTT over WebSockets (EMQX)
+// VIEW (OBS):  ?mode=view&room=abc123
+// DRAW (tab):  ?mode=draw&room=abc123&bg=white
+//
+// Broker WSS (HTTPS):
+// wss://broker.emqx.io:8084/mqtt
+// =====================================================
+
 const params = new URLSearchParams(window.location.search);
 const mode = (params.get("mode") || "view").toLowerCase();
 const room = params.get("room") || "default-room";
@@ -31,23 +40,22 @@ if (mode === "draw" && hint) {
     `DRAW (tablet): ?mode=draw&room=${room}&bg=white`;
 }
 
-// -------- Canvas resize (usa o tamanho real do canvas no layout atual) --------
+// ---------- Canvas sizing ----------
+function getCanvasRect() {
+  return canvas.getBoundingClientRect();
+}
+
 function resizeCanvas() {
   const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-
-  canvas.width = Math.floor(rect.width * dpr);
-  canvas.height = Math.floor(rect.height * dpr);
+  const r = getCanvasRect();
+  canvas.width = Math.floor(r.width * dpr);
+  canvas.height = Math.floor(r.height * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
   redrawAll();
 }
 window.addEventListener("resize", resizeCanvas);
 
-// coords normalizadas no referencial do canvas (rect)
-function getCanvasRect() {
-  return canvas.getBoundingClientRect();
-}
+// coords normalizadas pelo rect do canvas (mais consistente OBS vs tablet)
 function normPoint(clientX, clientY) {
   const r = getCanvasRect();
   return { x: (clientX - r.left) / r.width, y: (clientY - r.top) / r.height };
@@ -60,7 +68,6 @@ function denormPoint(p) {
 function drawSegment(aN, bN, color, size) {
   const a = denormPoint(aN);
   const b = denormPoint(bN);
-
   ctx.strokeStyle = color;
   ctx.lineWidth = Number(size);
   ctx.lineCap = "round";
@@ -71,7 +78,7 @@ function drawSegment(aN, bN, color, size) {
   ctx.stroke();
 }
 
-// -------- Estado para undo/redraw --------
+// ---------- State ----------
 let strokes = []; // [{_id,color,size,points:[{x,y}...]}]
 
 function redrawAll() {
@@ -92,17 +99,21 @@ function redrawAll() {
   }
 }
 
-// fundo branco opcional no tablet
+// tablet: fundo branco opcional
 if (mode === "draw" && bg === "white") {
   document.body.style.background = "#111";
   canvas.style.background = "#fff";
 }
 
-// -------- MQTT --------
-if (!window.mqtt) showFatal("mqtt.js não carregou. Confirma o script no index.html.");
+// ---------- MQTT ----------
+if (!window.mqtt) {
+  showFatal("mqtt.js não carregou.\nConfirma o script no index.html.");
+}
 
 const BROKER_URL = "wss://broker.emqx.io:8084/mqtt";
 const TOPIC = `pi/whiteboard/${room}`;
+
+// Client ID (único)
 const clientId = `wb_${mode}_${Math.random().toString(16).slice(2)}`;
 
 let client = null;
@@ -119,9 +130,99 @@ try {
     clean: true,
     connectTimeout: 8000,
     reconnectPeriod: 1200,
+    keepalive: 30,
   });
 } catch (e) {
   showFatal("Erro ao iniciar MQTT:\n" + String(e));
+}
+
+function publish(type, payload) {
+  if (!client || !client.connected) return;
+  // qos 0 é mais leve; a consistência vem do "commit"
+  client.publish(TOPIC, JSON.stringify({ type, payload }), { qos: 0, retain: false });
+}
+
+function findStroke(id) {
+  return strokes.find(s => s._id === id) || null;
+}
+
+function upsertStroke(fullStroke) {
+  const existing = findStroke(fullStroke._id);
+  if (!existing) {
+    strokes.push(fullStroke);
+  } else {
+    existing.color = fullStroke.color;
+    existing.size = fullStroke.size;
+    existing.points = fullStroke.points;
+  }
+}
+
+// Handler de mensagens
+function onMessage(msg) {
+  let data;
+  try { data = JSON.parse(msg.toString()); } catch { return; }
+  if (!data?.type) return;
+
+  // 1) realtime points (pode falhar, ok)
+  if (data.type === "stroke_points") {
+    const p = data.payload;
+    if (!p?._id || !Array.isArray(p.points) || p.points.length < 2) return;
+
+    let s = findStroke(p._id);
+    if (!s) {
+      s = { _id: p._id, color: p.color, size: p.size, points: [] };
+      strokes.push(s);
+    }
+
+    const startIdx = s.points.length;
+    for (const pt of p.points) s.points.push(pt);
+
+    // desenha só o que entrou agora
+    for (let i = Math.max(1, startIdx); i < s.points.length; i++) {
+      drawSegment(s.points[i - 1], s.points[i], s.color, s.size);
+    }
+    return;
+  }
+
+  // 2) commit do stroke (isto corrige tudo)
+  if (data.type === "stroke_commit") {
+    const s = data.payload;
+    if (!s?._id || !Array.isArray(s.points) || s.points.length < 2) return;
+    upsertStroke(s);
+    redrawAll();
+    return;
+  }
+
+  // 3) clear / undo (com sync)
+  if (data.type === "clear") {
+    strokes = [];
+    redrawAll();
+    return;
+  }
+
+  if (data.type === "undo") {
+    strokes.pop();
+    redrawAll();
+    return;
+  }
+
+  // 4) viewer pede estado
+  if (data.type === "req_state") {
+    // só o tablet responde (é o “autor”)
+    if (mode === "draw") {
+      publish("state", { strokes });
+    }
+    return;
+  }
+
+  // 5) resposta com estado completo
+  if (data.type === "state") {
+    const st = data.payload?.strokes;
+    if (!Array.isArray(st)) return;
+    strokes = st;
+    redrawAll();
+    return;
+  }
 }
 
 if (client) {
@@ -130,6 +231,11 @@ if (client) {
     client.subscribe(TOPIC, { qos: 0 }, (err) => {
       if (err) showFatal("Erro ao subscrever tópico:\n" + String(err));
     });
+
+    // se for VIEW, pede estado ao entrar
+    if (mode === "view") {
+      publish("req_state", { t: Date.now() });
+    }
   });
 
   client.on("reconnect", () => setStatus(false));
@@ -140,69 +246,28 @@ if (client) {
     showFatal("MQTT error:\n" + String(err?.message || err));
   });
 
-  client.on("message", (_topic, msg) => {
-    let data;
-    try { data = JSON.parse(msg.toString()); } catch { return; }
-    if (!data?.type) return;
-
-    if (data.type === "stroke_points") {
-      const p = data.payload;
-      if (!p?._id || !Array.isArray(p.points) || p.points.length < 2) return;
-
-      // encontra stroke existente ou cria
-      let s = strokes.find(x => x._id === p._id);
-      if (!s) {
-        s = { _id: p._id, color: p.color, size: p.size, points: [] };
-        strokes.push(s);
-      }
-
-      // acrescenta pontos e desenha só os novos
-      const startIdx = s.points.length;
-      for (const pt of p.points) s.points.push(pt);
-
-      for (let i = Math.max(1, startIdx); i < s.points.length; i++) {
-        drawSegment(s.points[i - 1], s.points[i], s.color, s.size);
-      }
-    }
-
-    if (data.type === "clear") {
-      strokes = [];
-      redrawAll();
-    }
-
-    if (data.type === "undo") {
-      strokes.pop();
-      redrawAll();
-    }
-  });
+  client.on("message", (_topic, msg) => onMessage(msg));
 }
 
-function publish(type, payload) {
-  if (!client || !client.connected) return;
-  client.publish(TOPIC, JSON.stringify({ type, payload }), { qos: 0, retain: false });
-}
-
-// -------- DRAW: batching + throttling --------
+// ---------- DRAW logic: batching realtime + commit final ----------
 if (mode === "draw") {
   let drawing = false;
   let activeId = null;
 
-  // buffer de pontos a enviar
+  // buffer realtime
   let buffer = [];
   let lastSentAt = 0;
 
-  // tuning:
-  const SEND_EVERY_MS = 33;      // ~30 fps (suficiente e muito mais fiável)
-  const MAX_POINTS_PER_PACKET = 25; // evita pacotes gigantes
-
+  // tuning
+  const SEND_EVERY_MS = 33;         // 30 fps
+  const MAX_POINTS_PER_PACKET = 30; // chunk
   const strokeId = () => Math.random().toString(16).slice(2);
 
-  function flush(force = false) {
+  function flushRealtime(force = false) {
     const now = performance.now();
     if (!force && (now - lastSentAt) < SEND_EVERY_MS) return;
     if (buffer.length < 2) return;
 
-    // corta em chunks
     const chunk = buffer.slice(0, MAX_POINTS_PER_PACKET);
     buffer = buffer.slice(MAX_POINTS_PER_PACKET);
 
@@ -215,8 +280,7 @@ if (mode === "draw") {
 
     lastSentAt = now;
 
-    // se ainda houver muitos pontos, manda mais já (mas respeitando limite de pacote)
-    if (buffer.length >= 2 && force) {
+    if (force) {
       while (buffer.length >= 2) {
         const c = buffer.slice(0, MAX_POINTS_PER_PACKET);
         buffer = buffer.slice(MAX_POINTS_PER_PACKET);
@@ -233,14 +297,20 @@ if (mode === "draw") {
   canvas.addEventListener("pointerdown", (e) => {
     drawing = true;
     activeId = strokeId();
+    buffer = [];
+    lastSentAt = 0;
 
     const p = normPoint(e.clientX, e.clientY);
 
-    // cria stroke local imediatamente
-    strokes.push({ _id: activeId, color: colorEl.value, size: sizeEl.value, points: [p] });
+    // cria stroke local
+    strokes.push({
+      _id: activeId,
+      color: colorEl.value,
+      size: sizeEl.value,
+      points: [p],
+    });
 
-    buffer = [p];
-    lastSentAt = 0;
+    buffer.push(p);
   });
 
   canvas.addEventListener("pointermove", (e) => {
@@ -248,30 +318,30 @@ if (mode === "draw") {
 
     const p = normPoint(e.clientX, e.clientY);
 
-    // local: adicionar e desenhar já
+    // local: adiciona e desenha
     const s = strokes[strokes.length - 1];
     s.points.push(p);
-
     const len = s.points.length;
-    if (len >= 2) {
-      drawSegment(s.points[len - 2], s.points[len - 1], s.color, s.size);
-    }
+    drawSegment(s.points[len - 2], s.points[len - 1], s.color, s.size);
 
-    // buffer para envio
+    // realtime buffer
     buffer.push(p);
-
-    // tenta enviar (throttle)
-    flush(false);
+    flushRealtime(false);
   });
 
   function stop() {
     if (!drawing) return;
     drawing = false;
 
-    // força envio do que sobrou
-    flush(true);
+    // envia o resto realtime
+    flushRealtime(true);
 
-    // limpa
+    // COMMIT: envia o stroke completo (isto garante que o OBS fica igual ao tablet)
+    const s = strokes[strokes.length - 1];
+    if (s && s.points.length >= 2) {
+      publish("stroke_commit", s);
+    }
+
     buffer = [];
     activeId = null;
   }
@@ -290,6 +360,8 @@ if (mode === "draw") {
     strokes.pop();
     redrawAll();
     publish("undo", {});
+    // depois do undo, manda estado para corrigir viewers
+    publish("state", { strokes });
   });
 }
 
