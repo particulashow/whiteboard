@@ -16,7 +16,7 @@ html, body {
   width: 100%;
 }
 
-/* evita scroll/zoom no tablet */
+/* tablet: impedir scroll/zoom a roubar gestos */
 body, canvas { touch-action: none; }
 
 canvas {
@@ -26,10 +26,10 @@ canvas {
   background: transparent; /* OBS friendly */
 }
 
-/* UI só aparece no draw, por CSS (não depende do JS para remover classes) */
+/* UI só aparece em draw */
 .ui { display: none; }
-body[data-mode="draw"] .ui { 
-  display: grid; 
+body[data-mode="draw"] .ui {
+  display: grid;
   position: fixed;
   left: 12px;
   right: 12px;
@@ -58,7 +58,6 @@ body[data-mode="draw"] .ui {
   gap: 8px;
   font-weight: 700;
   font-size: 13px;
-  letter-spacing: 0.3px;
 }
 
 .dot{
@@ -66,10 +65,9 @@ body[data-mode="draw"] .ui {
   height: 10px;
   border-radius: 999px;
   background: #777;
-  box-shadow: 0 0 0 2px rgba(255,255,255,0.10) inset;
 }
 
-.room{ font-size: 12px; opacity: 0.8; }
+.room{ font-size: 12px; opacity: 0.85; }
 
 .controls{
   display:flex;
@@ -101,7 +99,12 @@ body[data-mode="draw"] .ui {
   background: rgba(255,255,255,0.06);
 }
 
-.hint{ font-size: 12px; opacity: 0.85; white-space: pre-line; }
+.hint{
+  font-size: 12px;
+  opacity: 0.88;
+  white-space: pre-line;
+  line-height: 1.35;
+}
 
 .fatal{
   position: fixed;
