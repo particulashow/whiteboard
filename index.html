@@ -5,19 +5,16 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>OBS Whiteboard</title>
   <link rel="stylesheet" href="/style.css" />
-
-  <!-- Supabase JS via CDN -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
-<body>
-  <!-- UI só aparece no modo DRAW -->
-  <div id="ui" class="ui hidden" aria-hidden="true">
+
+<body data-mode="unknown">
+  <div id="ui" class="ui">
     <div class="topbar">
       <div class="status">
         <span id="dot" class="dot"></span>
-        <span id="statusText">OFFLINE</span>
+        <span id="statusText">A iniciar…</span>
       </div>
-
       <div class="room" id="roomLabel"></div>
     </div>
 
@@ -39,7 +36,8 @@
     <div class="hint" id="hint"></div>
   </div>
 
-  <!-- Canvas ocupa tudo -->
+  <div id="fatal" class="fatal hidden"></div>
+
   <canvas id="board"></canvas>
 
   <script src="/app.js"></script>
