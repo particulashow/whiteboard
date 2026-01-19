@@ -16,10 +16,8 @@ html, body {
   width: 100%;
 }
 
-/* MUITO IMPORTANTE para tablet: evita scroll/zoom a roubar gestos */
-body, canvas {
-  touch-action: none;
-}
+/* evita scroll/zoom no tablet */
+body, canvas { touch-action: none; }
 
 canvas {
   width: 100vw;
@@ -28,7 +26,10 @@ canvas {
   background: transparent; /* OBS friendly */
 }
 
-.ui {
+/* UI só aparece no draw, por CSS (não depende do JS para remover classes) */
+.ui { display: none; }
+body[data-mode="draw"] .ui { 
+  display: grid; 
   position: fixed;
   left: 12px;
   right: 12px;
@@ -41,11 +42,8 @@ canvas {
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   z-index: 10;
-  display: grid;
   gap: 10px;
 }
-
-.ui.hidden { display: none; }
 
 .topbar{
   display:flex;
@@ -58,7 +56,7 @@ canvas {
   display:flex;
   align-items:center;
   gap: 8px;
-  font-weight: 600;
+  font-weight: 700;
   font-size: 13px;
   letter-spacing: 0.3px;
 }
@@ -71,10 +69,7 @@ canvas {
   box-shadow: 0 0 0 2px rgba(255,255,255,0.10) inset;
 }
 
-.room{
-  font-size: 12px;
-  opacity: 0.8;
-}
+.room{ font-size: 12px; opacity: 0.8; }
 
 .controls{
   display:flex;
@@ -90,35 +85,35 @@ canvas {
   background: var(--panel2);
   color: var(--text);
   cursor: pointer;
-  font-weight: 600;
+  font-weight: 700;
 }
-
-.btn:active{
-  transform: translateY(1px);
-}
-
-.btn-danger{
-  background: var(--danger);
-}
+.btn:active{ transform: translateY(1px); }
+.btn-danger{ background: var(--danger); }
 
 .field{
   display: inline-flex;
   align-items: center;
   gap: 8px;
   font-size: 13px;
-  opacity: 0.95;
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 8px 10px;
   background: rgba(255,255,255,0.06);
 }
 
-.field span{
-  opacity: 0.9;
-}
+.hint{ font-size: 12px; opacity: 0.85; white-space: pre-line; }
 
-.hint{
-  font-size: 12px;
-  opacity: 0.8;
-  line-height: 1.35;
+.fatal{
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  top: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 70, 70, 0.20);
+  border: 1px solid rgba(255, 70, 70, 0.35);
+  color: #fff;
+  z-index: 20;
+  white-space: pre-line;
 }
+.fatal.hidden{ display:none; }
