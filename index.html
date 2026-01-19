@@ -3,12 +3,15 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>OBS Whiteboard</title>
+  <title>OBS Whiteboard (MQTT)</title>
   <link rel="stylesheet" href="/style.css" />
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <!-- MQTT.js (cliente MQTT para browser via WebSocket) -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
 </head>
 
 <body data-mode="unknown">
+  <!-- UI só aparece em mode=draw (controlado por CSS) -->
   <div id="ui" class="ui">
     <div class="topbar">
       <div class="status">
