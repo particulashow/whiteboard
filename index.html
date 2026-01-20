@@ -12,13 +12,20 @@
 <body data-mode="unknown">
   <aside id="toolbar" class="toolbar" aria-label="Ferramentas">
     <div class="toolbar-top">
-      <button id="btnMin" class="icon-btn" type="button" title="Minimizar">
+      <button id="btnMin" class="icon-btn" type="button" title="Compact / Overlay">
         <span>≡</span>
       </button>
       <div class="brand">WB</div>
     </div>
 
-    <div class="toolbar-section">
+    <div class="tabs" role="tablist" aria-label="Tabs">
+      <button class="tab-btn active" type="button" data-tab="tools" role="tab" aria-selected="true" title="Ferramentas">✏️</button>
+      <button class="tab-btn" type="button" data-tab="style" role="tab" aria-selected="false" title="Estilo">🎨</button>
+      <button class="tab-btn" type="button" data-tab="actions" role="tab" aria-selected="false" title="Ações">⚙️</button>
+    </div>
+
+    <!-- TAB: Tools -->
+    <div class="tab-content active" data-tab="tools" role="tabpanel">
       <div class="section-title">Ferramentas</div>
 
       <button class="tool-btn active" type="button" data-tool="pen" title="Caneta">✏️</button>
@@ -28,7 +35,8 @@
       <button class="tool-btn" type="button" data-tool="eraser" title="Borracha">🧽</button>
     </div>
 
-    <div class="toolbar-section">
+    <!-- TAB: Style -->
+    <div class="tab-content" data-tab="style" role="tabpanel">
       <div class="section-title">Cor</div>
 
       <div class="palette" id="palette">
@@ -44,9 +52,7 @@
         <span class="field-label">Custom</span>
         <input id="color" type="color" value="#ff3b30" />
       </label>
-    </div>
 
-    <div class="toolbar-section">
       <div class="section-title">Traço</div>
 
       <label class="field">
@@ -60,7 +66,8 @@
       </label>
     </div>
 
-    <div class="toolbar-section">
+    <!-- TAB: Actions -->
+    <div class="tab-content" data-tab="actions" role="tabpanel">
       <div class="section-title">Ações</div>
       <button id="btnUndo" type="button" class="action-btn">Undo</button>
       <button id="btnClear" type="button" class="action-btn danger">Limpar</button>
