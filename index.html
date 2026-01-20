@@ -4,103 +4,59 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
   <title>OBS Whiteboard</title>
+
   <link rel="stylesheet" href="/style.css" />
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
 </head>
 
 <body data-mode="unknown">
-  <!-- Toolbar lateral (só aparece em mode=draw via CSS) -->
-  <aside id="toolbar" class="toolbar" aria-label="Ferramentas do Whiteboard">
+
+  <!-- Toolbar lateral (apenas no modo draw) -->
+  <aside id="toolbar" class="toolbar">
     <div class="toolbar-top">
-      <button id="btnMin" class="icon-btn" type="button" title="Minimizar">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 12h10" /></svg>
-      </button>
+      <button id="btnMin" class="icon-btn">≡</button>
       <div class="brand">WB</div>
     </div>
 
     <div class="toolbar-section">
-      <div class="section-title">Ferramentas</div>
-
-      <button class="tool-btn active" type="button" data-tool="pen" title="Caneta">
-        <svg viewBox="0 0 24 24"><path d="M4 20l4-1 10-10-3-3L5 16l-1 4zM14 6l3 3" /></svg>
-      </button>
-
-      <button class="tool-btn" type="button" data-tool="highlighter" title="Marcador">
-        <svg viewBox="0 0 24 24"><path d="M6 15l7-7 3 3-7 7H6v-3zM14 5l3 3" /></svg>
-      </button>
-
-      <button class="tool-btn" type="button" data-tool="neon" title="Neon">
-        <svg viewBox="0 0 24 24"><path d="M12 3v18M6 7h12M6 17h12" /></svg>
-      </button>
-
-      <button class="tool-btn" type="button" data-tool="dashed" title="Tracejado">
-        <svg viewBox="0 0 24 24"><path d="M4 12h4M10 12h4M16 12h4" /></svg>
-      </button>
-
-      <button class="tool-btn" type="button" data-tool="eraser" title="Borracha">
-        <svg viewBox="0 0 24 24"><path d="M16 3l5 5-10 10H6L1 13 11 3h5zM6 18h15" /></svg>
-      </button>
+      <button class="tool-btn active" data-tool="pen">✏️</button>
+      <button class="tool-btn" data-tool="highlighter">🖍️</button>
+      <button class="tool-btn" data-tool="neon">✨</button>
+      <button class="tool-btn" data-tool="dashed">〰️</button>
+      <button class="tool-btn" data-tool="eraser">🧽</button>
     </div>
 
     <div class="toolbar-section">
-      <div class="section-title">Cor</div>
-
       <div class="palette" id="palette">
-        <button class="swatch" type="button" data-color="#ffffff" style="--c:#ffffff" title="Branco"></button>
-        <button class="swatch" type="button" data-color="#000000" style="--c:#000000" title="Preto"></button>
-        <button class="swatch" type="button" data-color="#ff3b30" style="--c:#ff3b30" title="Vermelho"></button>
-        <button class="swatch" type="button" data-color="#ffcc00" style="--c:#ffcc00" title="Amarelo"></button>
-        <button class="swatch" type="button" data-color="#34c759" style="--c:#34c759" title="Verde"></button>
-        <button class="swatch" type="button" data-color="#007aff" style="--c:#007aff" title="Azul"></button>
-        <button class="swatch" type="button" data-color="#af52de" style="--c:#af52de" title="Roxo"></button>
-        <button class="swatch" type="button" data-color="#ff2d55" style="--c:#ff2d55" title="Rosa"></button>
+        <button class="swatch" data-color="#ffffff" style="--c:#fff"></button>
+        <button class="swatch" data-color="#000000" style="--c:#000"></button>
+        <button class="swatch" data-color="#ff3b30" style="--c:#ff3b30"></button>
+        <button class="swatch" data-color="#ffcc00" style="--c:#ffcc00"></button>
+        <button class="swatch" data-color="#34c759" style="--c:#34c759"></button>
+        <button class="swatch" data-color="#007aff" style="--c:#007aff"></button>
       </div>
-
-      <label class="field">
-        <span class="field-label">Custom</span>
-        <input id="color" type="color" value="#ff3b30" />
-      </label>
+      <input id="color" type="color" value="#ff3b30" />
     </div>
 
     <div class="toolbar-section">
-      <div class="section-title">Traço</div>
-
-      <label class="field">
-        <span class="field-label">Tamanho</span>
-        <input id="size" type="range" min="1" max="26" value="5" />
-      </label>
-
-      <div class="chips">
-        <button class="chip" type="button" data-size="3">S</button>
-        <button class="chip active" type="button" data-size="5">M</button>
-        <button class="chip" type="button" data-size="10">L</button>
-      </div>
-
-      <label class="field">
-        <span class="field-label">Opacidade</span>
-        <input id="opacity" type="range" min="0.05" max="1" value="1" step="0.05" />
-      </label>
+      <input id="size" type="range" min="1" max="26" value="5" />
+      <input id="opacity" type="range" min="0.1" max="1" step="0.05" value="1" />
     </div>
 
     <div class="toolbar-section">
-      <div class="section-title">Ações</div>
-      <button id="btnUndo" type="button" class="action-btn">Undo</button>
-      <button id="btnClear" type="button" class="action-btn danger">Limpar</button>
+      <button id="btnUndo">Undo</button>
+      <button id="btnClear" class="danger">Limpar</button>
     </div>
 
     <div class="toolbar-footer">
-      <div class="status">
-        <span id="dot" class="dot"></span>
-        <span id="statusText">A iniciar…</span>
-      </div>
-      <div class="room" id="roomLabel"></div>
+      <span id="dot" class="dot"></span>
+      <span id="statusText">offline</span>
+      <div id="roomLabel" class="room"></div>
     </div>
   </aside>
 
-  <div id="fatal" class="fatal hidden"></div>
-
-  <!-- Canvas -->
   <canvas id="board"></canvas>
+  <div id="fatal" class="fatal hidden"></div>
 
   <script src="/app.js"></script>
 </body>
