@@ -34,13 +34,17 @@ canvas{
 
 /* Toolbar só no modo draw */
 .toolbar{ display:none; }
+
 body[data-mode="draw"] .toolbar{
   display:flex;
   position:fixed;
   top:12px;
-  bottom:12px;
   left:12px;
-  width: 96px;
+  width: 110px;
+
+  /* ✅ adapta ao ecrã */
+  max-height: calc(100dvh - 24px);
+
   flex-direction:column;
   gap:10px;
   padding:10px;
@@ -53,15 +57,25 @@ body[data-mode="draw"] .toolbar{
   z-index: 20;
   user-select:none;
   pointer-events: auto;
+
+  /* ✅ scroll interno se for preciso */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
-.toolbar.min{ width: 62px; padding: 10px 8px; }
+/* scrollbar discreta */
+.toolbar::-webkit-scrollbar{ width: 6px; }
+.toolbar::-webkit-scrollbar-thumb{
+  background: rgba(255,255,255,0.22);
+  border-radius: 6px;
+}
 
 .toolbar-top{
   display:flex;
   align-items:center;
   justify-content:space-between;
   gap:8px;
+  flex-shrink:0;
 }
 
 .brand{
@@ -83,14 +97,25 @@ body[data-mode="draw"] .toolbar{
   cursor:pointer;
 }
 
-.toolbar-section{
+/* Tabs */
+.tabs{
   display:flex;
-  flex-direction:column;
   gap:8px;
-  padding:8px;
-  border-radius:14px;
-  border:1px solid rgba(255,255,255,0.10);
-  background: rgba(255,255,255,0.05);
+  flex-shrink:0;
+}
+.tab-btn{
+  flex:1;
+  height:36px;
+  border-radius:12px;
+  border:1px solid var(--border);
+  background: rgba(255,255,255,0.08);
+  color: var(--text);
+  font-size:16px;
+  cursor:pointer;
+}
+.tab-btn.active{
+  background: rgba(255,255,255,0.18);
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.10) inset;
 }
 
 .section-title{
@@ -99,6 +124,17 @@ body[data-mode="draw"] .toolbar{
   letter-spacing:0.4px;
   color: var(--muted);
 }
+
+.tab-content{
+  display:none;
+  flex-direction:column;
+  gap:10px;
+  padding:8px;
+  border-radius:14px;
+  border:1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.05);
+}
+.tab-content.active{ display:flex; }
 
 .tool-btn{
   width:100%;
@@ -122,7 +158,6 @@ body[data-mode="draw"] .toolbar{
   grid-template-columns: repeat(2, 1fr);
   gap:8px;
 }
-
 .swatch{
   width:100%;
   height:30px;
@@ -180,6 +215,7 @@ input[type="color"]{
   border-radius:14px;
   border:1px solid rgba(255,255,255,0.10);
   background: rgba(255,255,255,0.05);
+  flex-shrink:0;
 }
 
 .status{
@@ -189,20 +225,51 @@ input[type="color"]{
   font-weight:900;
   font-size:12px;
 }
-
 .dot{
   width:10px;
   height:10px;
   border-radius:999px;
   background:#777;
 }
-
 .room{
   font-size:11px;
   opacity:0.82;
   word-break:break-all;
 }
 
+/* ===================== Floating Compact + Overlay ===================== */
+
+/* compact: só topo + tabs, sem conteúdos */
+.toolbar.compact{
+  width: 72px !important;
+  padding: 10px 8px !important;
+}
+.toolbar.compact .tab-content{ display:none !important; }
+.toolbar.compact .tabs{
+  flex-direction:column;
+  gap:10px;
+}
+.toolbar.compact .tab-btn{
+  height:44px;
+  font-size:18px;
+}
+
+/* overlay: abre flutuante no centro */
+.toolbar.overlay{
+  left:50% !important;
+  top:50% !important;
+  transform: translate(-50%, -50%) !important;
+  width: 280px !important;
+  max-height: 80dvh !important;
+  box-shadow: 0 24px 70px rgba(0,0,0,0.65);
+}
+
+/* quando overlay, tabs ficam horizontais */
+.toolbar.overlay .tabs{
+  flex-direction:row;
+}
+
+/* fatal */
 .fatal{
   position:fixed;
   left:12px;
@@ -217,3 +284,14 @@ input[type="color"]{
   white-space:pre-line;
 }
 .fatal.hidden{ display:none; }
+
+/* ecrãs baixos: ligeiro encolhimento */
+@media (max-height: 700px){
+  body[data-mode="draw"] .toolbar{
+    width: 96px;
+    padding: 8px;
+    gap: 8px;
+  }
+  .tool-btn{ height: 38px; font-size: 16px; }
+  .tab-btn{ height: 34px; }
+}
