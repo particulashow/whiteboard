@@ -1,8 +1,14 @@
 // =====================================================
 // OBS Whiteboard (Cloud) - MQTT over WebSockets (EMQX)
-// 2 tópicos: events + state (retained)
-// DRAW: ?mode=draw&room=abc123&bg=white
-// VIEW: ?mode=view&room=abc123
+// 2 tópicos:
+//   events: realtime (pode falhar, ok)
+//   state : estado completo (retained) para corrigir sempre
+//
+// VIEW (OBS):  ?mode=view&room=abc123
+// DRAW (tab):  ?mode=draw&room=abc123&bg=white
+//
+// Broker WSS:
+//   wss://broker.emqx.io:8084/mqtt
 // =====================================================
 
 (() => {
@@ -29,6 +35,9 @@
   const sizeEl = document.getElementById("size");
   const opacityEl = document.getElementById("opacity");
   const palette = document.getElementById("palette");
+
+  const tabBtns = document.querySelectorAll(".tab-btn");
+  const tabContents = document.querySelectorAll(".tab-content");
 
   function showFatal(msg) {
     if (!fatal) return;
@@ -316,7 +325,65 @@
     });
   }
 
-  // ---------- UI wiring (só no draw) ----------
+  // ---------- Tabs + Floating compact ----------
+  function setActiveTab(tab) {
+    tabBtns.forEach(b => {
+      const active = b.dataset.tab === tab;
+      b.classList.toggle("active", active);
+      b.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    tabContents.forEach(c => {
+      c.classList.toggle("active", c.dataset.tab === tab);
+    });
+  }
+
+  if (mode === "draw") {
+    // Impede que interações na toolbar “escorram” para o canvas
+    if (toolbar) {
+      ["pointerdown","pointermove","pointerup","touchstart","touchmove","touchend","click"].forEach(ev => {
+        toolbar.addEventListener(ev, (e) => e.stopPropagation(), { passive: true });
+      });
+    }
+
+    tabBtns.forEach(btn => {
+      btn.addEventListener("click", () => setActiveTab(btn.dataset.tab));
+    });
+
+    // ciclo de modos: normal -> compact -> overlay -> compact ...
+    // (mais prático no tablet)
+    if (btnMin && toolbar) {
+      btnMin.addEventListener("click", () => {
+        if (!toolbar.classList.contains("compact") && !toolbar.classList.contains("overlay")) {
+          toolbar.classList.add("compact");
+          toolbar.classList.remove("overlay");
+          return;
+        }
+        if (toolbar.classList.contains("compact")) {
+          toolbar.classList.remove("compact");
+          toolbar.classList.add("overlay");
+          return;
+        }
+        // overlay -> compact
+        toolbar.classList.remove("overlay");
+        toolbar.classList.add("compact");
+      });
+    }
+
+    // se estiver em compact e clicares num tab, abre overlay automaticamente
+    tabBtns.forEach(btn => {
+      btn.addEventListener("click", () => {
+        if (!toolbar) return;
+        if (toolbar.classList.contains("compact")) {
+          toolbar.classList.remove("compact");
+          toolbar.classList.add("overlay");
+        }
+      });
+    });
+
+    setActiveTab("tools");
+  }
+
+  // ---------- Tool UI wiring ----------
   function setTool(tool) {
     currentTool = tool;
     document.querySelectorAll(".tool-btn").forEach(b => {
@@ -353,13 +420,6 @@
   }
 
   if (mode === "draw") {
-    // Impede que interações na toolbar “escorram” para o canvas
-    if (toolbar) {
-      ["pointerdown","pointermove","pointerup","touchstart","touchmove","touchend","click"].forEach(ev => {
-        toolbar.addEventListener(ev, (e) => e.stopPropagation(), { passive: true });
-      });
-    }
-
     document.querySelectorAll(".tool-btn").forEach(btn => {
       btn.addEventListener("click", () => setTool(btn.dataset.tool));
     });
@@ -374,8 +434,22 @@
     if (sizeEl) sizeEl.addEventListener("input", (e) => setSize(e.target.value));
     if (opacityEl) opacityEl.addEventListener("input", (e) => setOpacity(e.target.value));
 
-    if (btnMin && toolbar) {
-      btnMin.addEventListener("click", () => toolbar.classList.toggle("min"));
+    if (btnClear) {
+      btnClear.addEventListener("click", () => {
+        strokes = [];
+        redrawAll();
+        publishEvents("clear", {});
+        publishStateRetained();
+      });
+    }
+
+    if (btnUndo) {
+      btnUndo.addEventListener("click", () => {
+        strokes.pop();
+        redrawAll();
+        publishEvents("undo", {});
+        publishStateRetained();
+      });
     }
 
     setTool("pen");
@@ -481,7 +555,6 @@
       }
     }
 
-    // pointer capture: melhora consistência no tablet quando arrastas rápido
     canvas.addEventListener("pointerdown", (e) => {
       if (canvas.setPointerCapture) canvas.setPointerCapture(e.pointerId);
 
@@ -548,24 +621,6 @@
     canvas.addEventListener("pointerup", stop);
     canvas.addEventListener("pointercancel", stop);
     canvas.addEventListener("pointerleave", stop);
-
-    if (btnClear) {
-      btnClear.addEventListener("click", () => {
-        strokes = [];
-        redrawAll();
-        publishEvents("clear", {});
-        publishStateRetained();
-      });
-    }
-
-    if (btnUndo) {
-      btnUndo.addEventListener("click", () => {
-        strokes.pop();
-        redrawAll();
-        publishEvents("undo", {});
-        publishStateRetained();
-      });
-    }
   }
 
   // init
