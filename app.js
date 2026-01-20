@@ -1,592 +1,165 @@
-// =====================================================
-// OBS Whiteboard - MQTT (EMQX public) + 2 tópicos
-// events: realtime
-// state : retained snapshot
-//
-// VIEW: ?mode=view&room=abc123
-// DRAW: ?mode=draw&room=abc123&bg=white
-// =====================================================
-
-const params = new URLSearchParams(window.location.search);
+// ================= CONFIG =================
+const params = new URLSearchParams(location.search);
 const mode = (params.get("mode") || "view").toLowerCase();
-const room = params.get("room") || "default-room";
-const bg = (params.get("bg") || "transparent").toLowerCase();
+const room = params.get("room") || "default";
+const bg = params.get("bg") || "transparent";
 document.body.dataset.mode = mode;
 
+// ================= CANVAS =================
 const canvas = document.getElementById("board");
-const ctx = canvas.getContext("2d", { alpha: true });
+const ctx = canvas.getContext("2d",{alpha:true});
 
-const fatal = document.getElementById("fatal");
-const dot = document.getElementById("dot");
-const statusText = document.getElementById("statusText");
-const roomLabel = document.getElementById("roomLabel");
-
-const toolbar = document.getElementById("toolbar");
-const btnMin = document.getElementById("btnMin");
-const btnClear = document.getElementById("btnClear");
-const btnUndo = document.getElementById("btnUndo");
-const colorEl = document.getElementById("color");
-const sizeEl = document.getElementById("size");
-const opacityEl = document.getElementById("opacity");
-const palette = document.getElementById("palette");
-
-function showFatal(msg) {
-  if (!fatal) return;
-  fatal.textContent = msg;
-  fatal.classList.remove("hidden");
-}
-
-if (roomLabel) roomLabel.textContent = `room: ${room}`;
-
-// ---------- Canvas sizing + coords ----------
-function getCanvasRect() { return canvas.getBoundingClientRect(); }
-
-function resizeCanvas() {
+function resize(){
   const dpr = window.devicePixelRatio || 1;
-  const r = getCanvasRect();
-  canvas.width = Math.floor(r.width * dpr);
-  canvas.height = Math.floor(r.height * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  redrawAll();
+  canvas.width = innerWidth * dpr;
+  canvas.height = innerHeight * dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  redraw();
 }
-window.addEventListener("resize", resizeCanvas);
+window.addEventListener("resize",resize);
 
-function normPoint(clientX, clientY) {
-  const r = getCanvasRect();
-  return { x: (clientX - r.left) / r.width, y: (clientY - r.top) / r.height };
-}
-function denormPoint(p) {
-  const r = getCanvasRect();
-  return { x: p.x * r.width, y: p.y * r.height };
-}
-
-// ---------- Tools / Style ----------
-let currentTool = "pen";      // pen | highlighter | neon | dashed | eraser
-let currentColor = "#ff3b30";
-let currentSize = 5;
-let currentOpacity = 1;
-
-function effectiveOpacity(tool, opacity) {
-  if (tool === "highlighter") return Math.min(opacity, 0.35);
-  if (tool === "neon") return Math.min(opacity, 0.85);
-  return opacity;
-}
-
-function applyStrokeStyle(stroke) {
-  ctx.globalAlpha = effectiveOpacity(stroke.tool, stroke.opacity ?? 1);
-  ctx.lineWidth = Number(stroke.size || 5);
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-
-  // defaults
-  ctx.setLineDash([]);
-  ctx.shadowBlur = 0;
-  ctx.shadowColor = "transparent";
-  ctx.globalCompositeOperation = "source-over";
-  ctx.strokeStyle = stroke.color || "#ffffff";
-
-  if (stroke.tool === "dashed") {
-    const w = ctx.lineWidth;
-    ctx.setLineDash([Math.max(6, w * 2), Math.max(6, w * 1.4)]);
-  }
-
-  if (stroke.tool === "neon") {
-    ctx.shadowBlur = Math.max(10, ctx.lineWidth * 2.5);
-    ctx.shadowColor = stroke.color || "#00ffff";
-  }
-
-  if (stroke.tool === "eraser") {
-    ctx.globalCompositeOperation = "destination-out";
-    ctx.globalAlpha = 1;
-    ctx.strokeStyle = "rgba(0,0,0,1)";
+// ================= STATE =================
+let strokes = [];
+function redraw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  for(const s of strokes){
+    for(let i=1;i<s.points.length;i++){
+      drawSeg(s.points[i-1],s.points[i],s);
+    }
   }
 }
 
-function drawSegment(aN, bN, stroke) {
-  const a = denormPoint(aN);
-  const b = denormPoint(bN);
-
+// ================= DRAW STYLE =================
+function drawSeg(a,b,s){
   ctx.save();
-  applyStrokeStyle(stroke);
+  ctx.globalAlpha = s.opacity;
+  ctx.lineWidth = s.size;
+  ctx.lineCap="round";
+  ctx.lineJoin="round";
+  ctx.setLineDash(s.tool==="dashed"?[10,6]:[]);
+  ctx.strokeStyle = s.color;
+
+  if(s.tool==="neon"){
+    ctx.shadowBlur=20;
+    ctx.shadowColor=s.color;
+  }
+  if(s.tool==="eraser"){
+    ctx.globalCompositeOperation="destination-out";
+    ctx.strokeStyle="#000";
+    ctx.globalAlpha=1;
+  }
 
   ctx.beginPath();
-  ctx.moveTo(a.x, a.y);
-  ctx.lineTo(b.x, b.y);
+  ctx.moveTo(a.x,a.y);
+  ctx.lineTo(b.x,b.y);
   ctx.stroke();
-
   ctx.restore();
 }
 
-// ---------- State ----------
-let strokes = []; // [{_id, tool, color, size, opacity, points:[{x,y}...]}]
+// ================= MQTT =================
+const mqtt = window.mqtt;
+const clientId = "wb_"+Math.random().toString(16).slice(2);
+const ORIGIN = clientId;
 
-function redrawAll() {
-  const r = getCanvasRect();
-
-  if (bg === "white" && mode === "draw") {
-    ctx.clearRect(0, 0, r.width, r.height);
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, r.width, r.height);
-  } else {
-    ctx.clearRect(0, 0, r.width, r.height);
-  }
-
-  for (const s of strokes) {
-    for (let i = 1; i < s.points.length; i++) {
-      drawSegment(s.points[i - 1], s.points[i], s);
-    }
-  }
-}
-
-if (mode === "draw" && bg === "white") {
-  document.body.style.background = "#111";
-  canvas.style.background = "#fff";
-}
-
-function findStroke(id) { return strokes.find(s => s._id === id) || null; }
-
-function upsertStroke(fullStroke) {
-  const ex = findStroke(fullStroke._id);
-  if (!ex) strokes.push(fullStroke);
-  else {
-    ex.tool = fullStroke.tool;
-    ex.color = fullStroke.color;
-    ex.size = fullStroke.size;
-    ex.opacity = fullStroke.opacity;
-    ex.points = fullStroke.points;
-  }
-}
-
-// ---------- MQTT ----------
-if (!window.mqtt) showFatal("mqtt.js não carregou.\nConfirma o script no index.html.");
-
-const BROKER_URL = "wss://broker.emqx.io:8084/mqtt";
 const TOPIC_EVENTS = `pi/whiteboard/${room}/events`;
 const TOPIC_STATE  = `pi/whiteboard/${room}/state`;
 
-const clientId = `wb_${mode}_${Math.random().toString(16).slice(2)}`;
-const ORIGIN = clientId;
+const client = mqtt.connect("wss://broker.emqx.io:8084/mqtt",{clientId});
+let stateV=0,lastV=0;
 
-let client = null;
-let stateVersion = 0;
-let lastStateVSeen = 0;
-
-function setStatus(online) {
-  if (mode !== "draw" || !dot || !statusText) return;
-  dot.style.background = online ? "#3ad65b" : "#ff4d4d";
-  statusText.textContent = online ? "LIVE" : "OFFLINE";
+function pubEvents(type,payload){
+  client.publish(TOPIC_EVENTS,JSON.stringify({type,origin:ORIGIN,payload}),{qos:1});
+}
+function pubState(){
+  stateV++;
+  client.publish(TOPIC_STATE,JSON.stringify({origin:ORIGIN,v:stateV,strokes}),{qos:1,retain:true});
 }
 
-try {
-  client = window.mqtt.connect(BROKER_URL, {
-    clientId,
-    clean: true,
-    connectTimeout: 8000,
-    reconnectPeriod: 1200,
-    keepalive: 30,
-  });
-} catch (e) {
-  showFatal("Erro ao iniciar MQTT:\n" + String(e));
-}
+client.on("connect",()=>{
+  client.subscribe([TOPIC_EVENTS,TOPIC_STATE]);
+  if(mode==="draw") pubState();
+  if(mode==="view") pubEvents("req",{});
+  document.getElementById("dot").style.background="lime";
+  document.getElementById("statusText").textContent="live";
+  document.getElementById("roomLabel").textContent=room;
+});
 
-function publishEvents(type, payload) {
-  if (!client || !client.connected) return;
-  client.publish(
-    TOPIC_EVENTS,
-    JSON.stringify({ type, origin: ORIGIN, payload }),
-    { qos: 1, retain: false }
-  );
-}
+client.on("message",(topic,msg)=>{
+  const d = JSON.parse(msg.toString());
+  if(d.origin===ORIGIN && mode==="draw") return;
 
-function publishStateRetained() {
-  if (!client || !client.connected) return;
-  stateVersion++;
-  client.publish(
-    TOPIC_STATE,
-    JSON.stringify({ origin: ORIGIN, v: stateVersion, strokes }),
-    { qos: 1, retain: true }
-  );
-}
-
-function handleEventsMessage(msg) {
-  let data;
-  try { data = JSON.parse(msg.toString()); } catch { return; }
-  if (!data?.type) return;
-
-  // no DRAW ignora eco das próprias mensagens
-  if (mode === "draw" && data.origin === ORIGIN) {
-    if (data.type !== "req_state") return;
+  if(topic===TOPIC_STATE){
+    if(d.v<=lastV) return;
+    lastV=d.v;
+    strokes=d.strokes;
+    redraw();
   }
 
-  if (data.type === "stroke_points") {
-    const p = data.payload;
-    if (!p?._id || !Array.isArray(p.points) || p.points.length < 2) return;
-
-    let s = findStroke(p._id);
-    if (!s) {
-      s = {
-        _id: p._id,
-        tool: p.tool || "pen",
-        color: p.color || "#ffffff",
-        size: p.size || 5,
-        opacity: p.opacity ?? 1,
-        points: []
-      };
-      strokes.push(s);
+  if(topic===TOPIC_EVENTS){
+    if(d.type==="stroke"){
+      strokes.push(d.payload);
+      redraw();
     }
-
-    const startIdx = s.points.length;
-    for (const pt of p.points) s.points.push(pt);
-
-    for (let i = Math.max(1, startIdx); i < s.points.length; i++) {
-      drawSegment(s.points[i - 1], s.points[i], s);
-    }
-    return;
+    if(d.type==="clear"){ strokes=[]; redraw(); }
+    if(d.type==="undo"){ strokes.pop(); redraw(); }
+    if(d.type==="req" && mode==="draw") pubState();
   }
+});
 
-  if (data.type === "stroke_commit") {
-    const s = data.payload;
-    if (!s?._id || !Array.isArray(s.points) || s.points.length < 2) return;
-    upsertStroke(s);
-    redrawAll();
-    return;
-  }
+// ================= UI =================
+let tool="pen", color="#ff3b30", size=5, opacity=1;
 
-  if (data.type === "clear") {
-    strokes = [];
-    redrawAll();
-    return;
-  }
+document.querySelectorAll(".tool-btn").forEach(b=>{
+  b.onclick=()=>{
+    document.querySelectorAll(".tool-btn").forEach(x=>x.classList.remove("active"));
+    b.classList.add("active");
+    tool=b.dataset.tool;
+  };
+});
 
-  if (data.type === "undo") {
-    strokes.pop();
-    redrawAll();
-    return;
-  }
+document.querySelectorAll(".swatch").forEach(s=>{
+  s.onclick=()=>color=s.dataset.color;
+});
+document.getElementById("color").oninput=e=>color=e.target.value;
+document.getElementById("size").oninput=e=>size=+e.target.value;
+document.getElementById("opacity").oninput=e=>opacity=+e.target.value;
 
-  if (data.type === "req_state") {
-    if (mode === "draw") publishStateRetained();
-  }
+document.getElementById("btnClear").onclick=()=>{
+  strokes=[]; redraw();
+  pubEvents("clear",{});
+  pubState();
+};
+document.getElementById("btnUndo").onclick=()=>{
+  strokes.pop(); redraw();
+  pubEvents("undo",{});
+  pubState();
+};
+document.getElementById("btnMin").onclick=()=>{
+  document.getElementById("toolbar").classList.toggle("min");
+};
+
+// ================= DRAW INPUT =================
+if(mode==="draw"){
+  let drawing=false, cur=null;
+
+  canvas.onpointerdown=e=>{
+    drawing=true;
+    cur={_id:Date.now()+Math.random(),tool,color,size,opacity,points:[{x:e.clientX,y:e.clientY}]};
+    strokes.push(cur);
+  };
+
+  canvas.onpointermove=e=>{
+    if(!drawing) return;
+    cur.points.push({x:e.clientX,y:e.clientY});
+    redraw();
+  };
+
+  canvas.onpointerup=()=>{
+    if(!drawing) return;
+    drawing=false;
+    pubEvents("stroke",cur);
+    pubState();
+  };
 }
 
-function handleStateMessage(msg) {
-  let data;
-  try { data = JSON.parse(msg.toString()); } catch { return; }
-  if (!Array.isArray(data.strokes)) return;
-
-  if (mode === "draw" && data.origin === ORIGIN) return;
-
-  if (mode === "view") {
-    const v = Number(data.v || 0);
-    if (v && v <= lastStateVSeen) return;
-    lastStateVSeen = v || lastStateVSeen;
-  }
-
-  strokes = data.strokes;
-  redrawAll();
-}
-
-if (client) {
-  client.on("connect", () => {
-    setStatus(true);
-
-    client.subscribe(TOPIC_EVENTS, { qos: 1 }, (err) => {
-      if (err) showFatal("Erro ao subscrever events:\n" + String(err));
-    });
-    client.subscribe(TOPIC_STATE, { qos: 1 }, (err) => {
-      if (err) showFatal("Erro ao subscrever state:\n" + String(err));
-    });
-
-    if (mode === "view") publishEvents("req_state", { t: Date.now() });
-    if (mode === "draw") publishStateRetained();
-  });
-
-  client.on("reconnect", () => setStatus(false));
-  client.on("close", () => setStatus(false));
-  client.on("offline", () => setStatus(false));
-  client.on("error", (err) => {
-    setStatus(false);
-    showFatal("MQTT error:\n" + String(err?.message || err));
-  });
-
-  client.on("message", (topic, msg) => {
-    if (topic === TOPIC_EVENTS) return handleEventsMessage(msg);
-    if (topic === TOPIC_STATE)  return handleStateMessage(msg);
-  });
-}
-
-// ---------- UI wiring (só no draw) ----------
-function setTool(tool) {
-  currentTool = tool;
-
-  document.querySelectorAll(".tool-btn").forEach(b => {
-    b.classList.toggle("active", b.dataset.tool === tool);
-  });
-
-  // defaults simpáticos por tool
-  if (tool === "highlighter") {
-    currentOpacity = Math.min(currentOpacity, 0.35);
-    if (opacityEl) opacityEl.value = String(currentOpacity);
-  }
-  if (tool === "eraser") {
-    // borracha costuma ser maior
-    currentSize = Math.max(currentSize, 12);
-    if (sizeEl) sizeEl.value = String(currentSize);
-    document.querySelectorAll(".chip").forEach(c => c.classList.remove("active"));
-  }
-}
-
-function setColor(hex) {
-  currentColor = hex;
-  if (colorEl) colorEl.value = hex;
-
-  document.querySelectorAll(".swatch").forEach(s => {
-    s.classList.toggle("active", s.dataset.color?.toLowerCase() === hex.toLowerCase());
-  });
-}
-
-function setSize(n) {
-  currentSize = Number(n);
-  if (sizeEl) sizeEl.value = String(currentSize);
-
-  document.querySelectorAll(".chip").forEach(c => {
-    c.classList.toggle("active", Number(c.dataset.size) === currentSize);
-  });
-}
-
-function setOpacity(v) {
-  currentOpacity = Number(v);
-  if (opacityEl) opacityEl.value = String(currentOpacity);
-}
-
-if (mode === "draw") {
-  // Tool buttons
-  document.querySelectorAll(".tool-btn").forEach(btn => {
-    btn.addEventListener("click", () => setTool(btn.dataset.tool));
-  });
-
-  // Palette
-  if (palette) {
-    palette.querySelectorAll(".swatch").forEach(sw => {
-      sw.addEventListener("click", () => setColor(sw.dataset.color));
-    });
-  }
-
-  // Color input
-  if (colorEl) {
-    colorEl.addEventListener("input", (e) => setColor(e.target.value));
-  }
-
-  // Size slider
-  if (sizeEl) {
-    sizeEl.addEventListener("input", (e) => setSize(e.target.value));
-  }
-
-  // Size chips
-  document.querySelectorAll(".chip").forEach(ch => {
-    ch.addEventListener("click", () => setSize(ch.dataset.size));
-  });
-
-  // Opacity
-  if (opacityEl) {
-    opacityEl.addEventListener("input", (e) => setOpacity(e.target.value));
-  }
-
-  // Minimize
-  if (btnMin && toolbar) {
-    btnMin.addEventListener("click", () => {
-      toolbar.classList.toggle("min");
-    });
-  }
-
-  // defaults
-  setTool("pen");
-  setColor(currentColor);
-  setSize(currentSize);
-  setOpacity(currentOpacity);
-}
-
-// ---------- DRAW: batching + checkpoints + filtro + interpolação ----------
-if (mode === "draw") {
-  let drawing = false;
-  let activeId = null;
-
-  let buffer = [];
-  let lastSentAt = 0;
-
-  let checkpointTimer = null;
-
-  const SEND_EVERY_MS = 33;           // 30fps
-  const MAX_POINTS_PER_PACKET = 30;
-  const CHECKPOINT_MS = 250;          // corrige 4x/seg
-  const strokeId = () => Math.random().toString(16).slice(2);
-
-  const MIN_DIST2 = 0.0000015;        // mais sensível p/ escrita rápida
-  const MAX_STEP = 0.012;             // interpolação
-
-  function dist2(a, b) {
-    const dx = a.x - b.x;
-    const dy = a.y - b.y;
-    return dx*dx + dy*dy;
-  }
-
-  function lerp(a, b, t) {
-    return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
-  }
-
-  function pushInterpolatedPoints(stroke, from, to) {
-    const dx = to.x - from.x;
-    const dy = to.y - from.y;
-    const dist = Math.sqrt(dx*dx + dy*dy);
-
-    if (dist <= MAX_STEP) {
-      stroke.points.push(to);
-      buffer.push(to);
-      drawSegment(from, to, stroke);
-      return;
-    }
-
-    const steps = Math.ceil(dist / MAX_STEP);
-    let prev = from;
-
-    for (let i = 1; i <= steps; i++) {
-      const p = lerp(from, to, i / steps);
-      stroke.points.push(p);
-      buffer.push(p);
-      drawSegment(prev, p, stroke);
-      prev = p;
-    }
-  }
-
-  function startCheckpointing() {
-    if (checkpointTimer) return;
-    checkpointTimer = setInterval(() => publishStateRetained(), CHECKPOINT_MS);
-  }
-
-  function stopCheckpointing() {
-    if (!checkpointTimer) return;
-    clearInterval(checkpointTimer);
-    checkpointTimer = null;
-    publishStateRetained();
-  }
-
-  function flushRealtime(force = false) {
-    const now = performance.now();
-    if (!force && (now - lastSentAt) < SEND_EVERY_MS) return;
-    if (buffer.length < 2) return;
-
-    const chunk = buffer.slice(0, MAX_POINTS_PER_PACKET);
-    buffer = buffer.slice(MAX_POINTS_PER_PACKET);
-
-    // Envia também o estilo para o VIEW conseguir desenhar igual
-    publishEvents("stroke_points", {
-      _id: activeId,
-      tool: currentTool,
-      color: currentColor,
-      size: currentSize,
-      opacity: currentOpacity,
-      points: chunk,
-    });
-
-    lastSentAt = now;
-
-    if (force) {
-      while (buffer.length >= 2) {
-        const c = buffer.slice(0, MAX_POINTS_PER_PACKET);
-        buffer = buffer.slice(MAX_POINTS_PER_PACKET);
-
-        publishEvents("stroke_points", {
-          _id: activeId,
-          tool: currentTool,
-          color: currentColor,
-          size: currentSize,
-          opacity: currentOpacity,
-          points: c,
-        });
-      }
-    }
-  }
-
-  canvas.addEventListener("pointerdown", (e) => {
-    drawing = true;
-    activeId = strokeId();
-    buffer = [];
-    lastSentAt = 0;
-
-    const p = normPoint(e.clientX, e.clientY);
-
-    const stroke = {
-      _id: activeId,
-      tool: currentTool,
-      color: currentColor,
-      size: currentSize,
-      opacity: currentOpacity,
-      points: [p],
-    };
-
-    strokes.push(stroke);
-    buffer.push(p);
-
-    startCheckpointing();
-  });
-
-  canvas.addEventListener("pointermove", (e) => {
-    if (!drawing) return;
-
-    const p = normPoint(e.clientX, e.clientY);
-    const stroke = strokes[strokes.length - 1];
-    const last = stroke.points[stroke.points.length - 1];
-
-    if (last && dist2(p, last) < MIN_DIST2) return;
-
-    if (last) pushInterpolatedPoints(stroke, last, p);
-    else {
-      stroke.points.push(p);
-      buffer.push(p);
-    }
-
-    flushRealtime(false);
-  });
-
-  function stop() {
-    if (!drawing) return;
-    drawing = false;
-
-    flushRealtime(true);
-
-    const stroke = strokes[strokes.length - 1];
-    if (stroke && stroke.points.length >= 2) {
-      publishEvents("stroke_commit", stroke);
-    }
-
-    stopCheckpointing();
-
-    buffer = [];
-    activeId = null;
-  }
-
-  canvas.addEventListener("pointerup", stop);
-  canvas.addEventListener("pointercancel", stop);
-  canvas.addEventListener("pointerleave", stop);
-
-  if (btnClear) {
-    btnClear.addEventListener("click", () => {
-      strokes = [];
-      redrawAll();
-      publishEvents("clear", {});
-      publishStateRetained();
-    });
-  }
-
-  if (btnUndo) {
-    btnUndo.addEventListener("click", () => {
-      strokes.pop();
-      redrawAll();
-      publishEvents("undo", {});
-      publishStateRetained();
-    });
-  }
-}
-
-// init
-resizeCanvas();
+resize();
